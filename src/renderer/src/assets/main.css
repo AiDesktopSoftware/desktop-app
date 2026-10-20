@@ -73,6 +73,12 @@ button {
   cursor: pointer;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent, var(--lime));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -109,6 +115,7 @@ button {
   padding: 18px 14px 14px;
   background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
   border-right: 1px solid var(--line);
+  transition: flex-basis 0.22s ease, padding 0.22s ease;
 }
 
 .brand {
@@ -160,6 +167,73 @@ button {
 .brand-text small {
   font-size: 11px;
   color: var(--text-3);
+}
+
+/* 侧栏收起按钮 */
+.collapse-btn {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  border-radius: 6px;
+  color: var(--text-3);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+
+.collapse-btn svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 0.22s ease;
+}
+
+/* ---------------- 侧栏收起态 ---------------- */
+
+.app.is-collapsed .sidebar {
+  flex-basis: 64px;
+  padding: 18px 10px 14px;
+}
+
+.app.is-collapsed .brand {
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+
+.app.is-collapsed .brand-text,
+.app.is-collapsed .nav-text,
+.app.is-collapsed .nav-owner,
+.app.is-collapsed .foot-text {
+  display: none;
+}
+
+.app.is-collapsed .collapse-btn {
+  margin-left: 0;
+}
+
+.app.is-collapsed .collapse-btn svg {
+  transform: rotate(180deg);
+}
+
+.app.is-collapsed .nav-item {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 10px 0;
+}
+
+.app.is-collapsed .nav-item::before {
+  left: -10px;
+}
+
+.app.is-collapsed .sidebar-foot {
+  justify-content: center;
+  padding: 8px 0 2px;
 }
 
 .nav {
@@ -273,18 +347,22 @@ button {
   position: relative;
   flex: 1;
   min-width: 0;
-  overflow: auto;
-  padding: 26px 30px 30px;
+  display: flex;
+  overflow: hidden;
   background: radial-gradient(760px 420px at 12% -8%, var(--accent-soft), transparent 62%), var(--bg-0);
 }
 
 /* ---------------- 模式页公共骨架 ---------------- */
 
 .view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  min-height: 100%;
+  padding: 26px 30px 30px;
 }
 
 .view-header {

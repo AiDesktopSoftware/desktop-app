@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import ChatView from './views/chat/ChatView.vue'
 import WorkView from './views/work/WorkView.vue'
 import InfoView from './views/info/InfoView.vue'
@@ -19,12 +19,36 @@ const MODES: { key: ModeKey; label: string; desc: string; owner: string }[] = [
   { key: 'info', label: '信息', desc: '多源采集与数据清洗', owner: '胡' }
 ]
 
+const COLLAPSE_KEY = 'shell.sidebar-collapsed'
+
 const activeMode = shallowRef<ModeKey>('chat')
 const activeView = computed(() => VIEWS[activeMode.value])
+const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === '1')
+
+function toggleSidebar() {
+  collapsed.value = !collapsed.value
+  localStorage.setItem(COLLAPSE_KEY, collapsed.value ? '1' : '0')
+}
+
+// 快捷键：Alt+1/2/3 切模式，Ctrl+B 收起/展开侧栏
+function onKeydown(e: KeyboardEvent) {
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b') {
+    e.preventDefault()
+    toggleSidebar()
+    return
+  }
+  if (e.altKey && ['1', '2', '3'].includes(e.key)) {
+    e.preventDefault()
+    activeMode.value = MODES[Number(e.key) - 1].key
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
-  <div class="app" :class="'mode-' + activeMode">
+  <div class="app" :class="['mode-' + activeMode, { 'is-collapsed': collapsed }]">
     <aside class="sidebar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
@@ -34,14 +58,24 @@ const activeView = computed(() => VIEWS[activeMode.value])
           <strong>AiDesktopSoftware</strong>
           <small>多源采集 · 研究助手</small>
         </span>
+        <button
+          class="collapse-btn"
+          :title="collapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)'"
+          @click="toggleSidebar"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 7l-5 5 5 5" />
+          </svg>
+        </button>
       </div>
 
       <nav class="nav">
         <button
-          v-for="mode in MODES"
+          v-for="(mode, idx) in MODES"
           :key="mode.key"
           class="nav-item"
           :class="{ 'is-active': activeMode === mode.key }"
+          :title="mode.label + '（Alt+' + (idx + 1) + '）'"
           @click="activeMode = mode.key"
         >
           <svg
@@ -81,9 +115,9 @@ const activeView = computed(() => VIEWS[activeMode.value])
         </button>
       </nav>
 
-      <div class="sidebar-foot">
+      <div class="sidebar-foot" title="Alt+1/2/3 切换模式">
         <span class="dot" />
-        <span>v0.1.0 · 骨架阶段</span>
+        <span class="foot-text">v0.1.0 · 骨架阶段</span>
       </div>
     </aside>
 
