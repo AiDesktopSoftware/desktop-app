@@ -1,4 +1,5 @@
 import { ipcMain, type WebContents } from 'electron'
+import { runAgent } from './agent'
 import { getConfig, isConfigured, maskApiKey } from './config'
 import { chatOnce, LlmError, streamChat, type LlmMessage } from './llm'
 import { loadSessions, saveSessions } from './store'
@@ -67,7 +68,8 @@ export function registerWorkIpc(): void {
       return { ok: false, message: '消息内容为空，无法发送。' }
     }
 
-    const mode = payload.mode === 'plan' ? 'plan' : 'chat'
+    const mode =
+      payload.mode === 'plan' ? 'plan' : payload.mode === 'agent' ? 'agent' : 'chat'
     const model = typeof payload.model === 'string' && payload.model ? payload.model : undefined
     const temperature =
       typeof payload.temperature === 'number' && Number.isFinite(payload.temperature)
@@ -81,6 +83,18 @@ export function registerWorkIpc(): void {
     controllers.set(requestId, controller)
 
     try {
+      if (mode === 'agent') {
+        await runAgent({
+          requestId,
+          messages,
+          model,
+          temperature,
+          signal: controller.signal,
+          send: (channel, payloadBody) => safeSend(sender, channel, payloadBody)
+        })
+        return { ok: true }
+      }
+
       if (mode === 'plan') {
         const text = await chatOnce({
           messages,

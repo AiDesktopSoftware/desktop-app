@@ -32,6 +32,7 @@ const workApi: WorkApi = {
   onChunk: (cb) => subscribe('work:chat:chunk', cb),
   onDone: (cb) => subscribe('work:chat:done', cb),
   onError: (cb) => subscribe('work:chat:error', cb),
+  onTool: (cb) => subscribe('work:agent:tool', cb),
   settingsStatus: () =>
     ipcRenderer.invoke('work:settings:status') as Promise<WorkSettingsStatus>,
   loadSessions: () => ipcRenderer.invoke('work:store:load') as Promise<WorkSession[]>,

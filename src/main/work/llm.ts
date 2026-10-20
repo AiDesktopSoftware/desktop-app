@@ -18,6 +18,46 @@ export interface StreamChatOptions extends ChatOptions {
   onDelta?: (delta: string) => void
 }
 
+/** OpenAI 兼容的 function calling 工具定义 */
+export interface LlmToolSchema {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+export interface LlmToolCall {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+/** Agent 循环使用：assistant 可携带 tool_calls，工具结果用 tool 角色回传 */
+export type LlmAgentMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content: string; tool_calls?: LlmToolCall[] }
+  | { role: 'tool'; content: string; tool_call_id: string }
+
+export interface ToolChatOptions {
+  messages: LlmAgentMessage[]
+  /** 不传时不开放工具，用于收尾回答 */
+  tools?: LlmToolSchema[]
+  toolChoice?: 'auto' | 'none'
+  model?: string
+  temperature?: number
+  signal?: AbortSignal
+}
+
+export interface ToolChatResult {
+  content: string
+  toolCalls: LlmToolCall[]
+}
+
 /** 带 HTTP 状态码的模型调用错误，便于界面给出可读提示 */
 export class LlmError extends Error {
   readonly status: number
@@ -203,4 +243,87 @@ export function streamChat(options: StreamChatOptions): Promise<string> {
 /** 非流式调用，用于任务计划生成与单步执行 */
 export function chatOnce(options: ChatOptions): Promise<string> {
   return requestChat(options, false)
+}
+
+/**
+ * 支持 function calling 的非流式调用，供 Agent 循环使用。
+ * 返回 assistant 的文本内容与工具调用列表，不改变原有导出行为。
+ */
+export async function chatWithTools(options: ToolChatOptions): Promise<ToolChatResult> {
+  const config = getConfig()
+  if (!config.apiKey) {
+    throw new LlmError('未配置 API Key，请在 config.local.json 或 work-settings.json 中填写。')
+  }
+
+  const timeoutController = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    timeoutController.abort()
+  }, REQUEST_TIMEOUT_MS)
+  const signals: AbortSignal[] = [timeoutController.signal]
+  if (options.signal) signals.push(options.signal)
+  const signal = signals.length > 1 ? AbortSignal.any(signals) : timeoutController.signal
+
+  try {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: options.model || config.model,
+        messages: options.messages,
+        temperature: options.temperature ?? 0.3,
+        stream: false,
+        ...(options.tools && options.tools.length > 0
+          ? { tools: options.tools, tool_choice: options.toolChoice ?? 'auto' }
+          : {})
+      }),
+      signal
+    })
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '')
+      throw new LlmError(describeHttpError(response.status, body), response.status)
+    }
+
+    const data = (await response.json()) as {
+      choices?: {
+        message?: {
+          content?: string | null
+          tool_calls?: {
+            id?: string
+            type?: string
+            function?: { name?: string; arguments?: string }
+          }[]
+        }
+      }[]
+    }
+    const message = data.choices?.[0]?.message
+    const content = typeof message?.content === 'string' ? message.content : ''
+    const toolCalls: LlmToolCall[] = Array.isArray(message?.tool_calls)
+      ? message.tool_calls
+          .filter((call) => call && typeof call.function?.name === 'string')
+          .map((call, index) => ({
+            id: typeof call.id === 'string' && call.id ? call.id : `call_${index}`,
+            type: 'function',
+            function: {
+              name: call.function?.name ?? '',
+              arguments:
+                typeof call.function?.arguments === 'string' ? call.function.arguments : '{}'
+            }
+          }))
+      : []
+    return { content, toolCalls }
+  } catch (error) {
+    if (options.signal?.aborted) throw abortError()
+    if (timedOut) throw new LlmError('请求超时，请稍后重试。', 408)
+    if (error instanceof LlmError) throw error
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new LlmError(`网络请求失败：${detail.slice(0, 120)}。请检查网络连接或代理设置。`)
+  } finally {
+    clearTimeout(timer)
+  }
 }

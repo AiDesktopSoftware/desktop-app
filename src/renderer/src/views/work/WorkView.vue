@@ -5,36 +5,23 @@ import type {
   WorkMessage,
   WorkSession,
   WorkSettingsStatus,
-  WorkStep
+  WorkToolCall,
+  WorkToolEvent
 } from './types'
 
 // 【工作模式】负责人：赵
-// 当前阶段：接入 DeepSeek 流式对话 + 任务拆解执行；检索与知识库下一阶段接入
+// 当前阶段：DeepSeek Agent 工具循环 + 会话管理；工具轨迹在消息上方展示
 
 const api = window.workApi
 
-const PLAN_SYSTEM = [
-  '你是一名严谨的研究任务规划助手。请结合用户的最新问题，把任务拆解为 3 到 5 个可以依次执行的具体步骤。',
-  '要求：',
-  '1. 只输出一个 JSON 对象，不要输出 Markdown 代码块、解释或任何多余文字。',
-  '2. 格式必须为 {"steps":[{"title":"步骤标题","detail":"该步骤要完成的内容"}]}。',
-  '3. title 不超过 20 个字，detail 不超过 60 个字。',
-  '4. 步骤要具体、互不重复，最后一步负责整合与形成结论。'
-].join('\n')
-
-const STEP_SYSTEM = [
-  '你是一名严谨的研究助手。现在只需要完成用户指定的单个步骤，不要复述整个任务，也不要输出任务计划。',
-  '请用中文给出该步骤的结果，结构清晰、内容具体；不确定的信息要明确说明，不要编造来源、数据或引用。'
-].join('\n')
-
-const FINAL_SYSTEM = [
-  '你是一名严谨的研究助手。请基于对话上下文和已完成的步骤结果，输出一份结构化的综合回答。',
-  '要求：',
-  '1. 先用 3 到 5 条要点给出结论摘要。',
-  '2. 再按主题分节展开，必要时使用小标题和列表。',
-  '3. 不要编造来源、数据、作者或引用；没有检索来源时明确说明这是基于模型知识的分析。',
-  '4. 使用中文，避免空话套话。'
-].join('\n')
+const TOOL_LABELS: Record<string, string> = {
+  web_search: '联网搜索',
+  fetch_url: '读取网页',
+  list_files: '列目录',
+  read_file: '读文件',
+  write_file: '写文件',
+  run_command: '执行命令'
+}
 
 const SUGGESTIONS = [
   '梳理 2024 年以来多模态大模型在检索增强方向的进展',
@@ -52,6 +39,7 @@ interface RunResult {
 interface PendingRequest {
   text: string
   onDelta?: (delta: string) => void
+  onTool?: (event: WorkToolEvent) => void
   settled: boolean
   aborted: boolean
   resolve: (result: RunResult) => void
@@ -80,9 +68,11 @@ const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const handlers = new Map<string, PendingRequest>()
 let scrollTimer: number | undefined
 let deleteTimer: number | undefined
+let persistTimer: number | undefined
 let offChunk: (() => void) | undefined
 let offDone: (() => void) | undefined
 let offError: (() => void) | undefined
+let offTool: (() => void) | undefined
 
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeSessionId.value) ?? null
@@ -110,18 +100,45 @@ const groupedSessions = computed(() => {
   return Array.from(groups, ([name, items]) => ({ name, items }))
 })
 
-const currentSteps = computed<WorkStep[]>(() => {
+const currentTools = computed<WorkToolCall[]>(() => {
   const messages = activeMessages.value
   for (let i = messages.length - 1; i >= 0; i--) {
-    const steps = messages[i].steps
-    if (steps && steps.length > 0) return steps
+    const tools = messages[i].tools
+    if (tools && tools.length > 0) return tools
   }
   return []
 })
 
-const doneStepCount = computed(
-  () => currentSteps.value.filter((step) => step.status === 'done').length
+const doneToolCount = computed(
+  () => currentTools.value.filter((tool) => tool.status === 'done').length
 )
+
+const collapsedTools = ref<Record<string, boolean>>({})
+
+function toolsOpen(message: WorkMessage): boolean {
+  const running = Boolean(message.tools?.some((tool) => tool.status === 'running'))
+  return running || !collapsedTools.value[message.id]
+}
+
+function toggleTools(message: WorkMessage): void {
+  collapsedTools.value[message.id] = toolsOpen(message) ? false : true
+}
+
+function toolLabel(name: string): string {
+  return TOOL_LABELS[name] ?? name
+}
+
+function toolArgSummary(args: Record<string, unknown>): string {
+  const keys = ['query', 'url', 'path', 'dir', 'command']
+  for (const key of keys) {
+    const value = args[key]
+    if (typeof value === 'string' && value.trim()) {
+      const single = value.replace(/\s+/g, ' ').trim()
+      return single.length > 40 ? `${single.slice(0, 40)}…` : single
+    }
+  }
+  return ''
+}
 
 function uid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -150,16 +167,14 @@ function formatSessionTime(timestamp: number): string {
   return `${date.getMonth() + 1}-${date.getDate()}`
 }
 
-function statusText(status: WorkStep['status']): string {
+function statusText(status: WorkToolCall['status']): string {
   switch (status) {
     case 'running':
-      return '进行中'
+      return '运行中'
     case 'done':
       return '完成'
-    case 'failed':
-      return '失败'
     default:
-      return '待执行'
+      return '失败'
   }
 }
 
@@ -190,16 +205,20 @@ function settle(requestId: string, result: RunResult): void {
 }
 
 function startRequest(
-  mode: 'chat' | 'plan',
+  mode: 'chat' | 'agent',
   messages: WorkChatMessage[],
-  onDelta?: (delta: string) => void
+  callbacks: {
+    onDelta?: (delta: string) => void
+    onTool?: (event: WorkToolEvent) => void
+  } = {}
 ): Promise<RunResult> {
   const requestId = uid()
   currentRequestId.value = requestId
   return new Promise<RunResult>((resolve) => {
     const entry: PendingRequest = {
       text: '',
-      onDelta,
+      onDelta: callbacks.onDelta,
+      onTool: callbacks.onTool,
       settled: false,
       aborted: false,
       resolve
@@ -245,63 +264,46 @@ function buildHistory(session: WorkSession, assistantId: string): WorkChatMessag
     }))
 }
 
-function parsePlan(raw: string): WorkStep[] {
-  try {
-    let text = raw.trim()
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
-    if (fence) text = fence[1].trim()
-    const start = text.indexOf('{')
-    const end = text.lastIndexOf('}')
-    if (start < 0 || end <= start) return []
-
-    const data = JSON.parse(text.slice(start, end + 1)) as { steps?: unknown }
-    if (!Array.isArray(data.steps)) return []
-
-    const steps: WorkStep[] = []
-    for (const item of data.steps) {
-      if (!item || typeof item !== 'object') continue
-      const record = item as { title?: unknown; detail?: unknown }
-      const title = typeof record.title === 'string' ? record.title.trim() : ''
-      const detail = typeof record.detail === 'string' ? record.detail.trim() : ''
-      if (!title) continue
-      steps.push({
-        id: uid(),
-        title: title.slice(0, 60),
-        detail: detail ? detail.slice(0, 200) : undefined,
-        status: 'pending'
-      })
-      if (steps.length >= 5) break
+/** 把仍在运行的工具标记为中断，避免界面一直转圈 */
+function markInterruptedTools(assistant: WorkMessage): void {
+  if (!assistant.tools) return
+  for (const tool of assistant.tools) {
+    if (tool.status === 'running') {
+      tool.status = 'failed'
+      tool.output = tool.output || '执行被中断'
     }
-    return steps.length >= 2 ? steps : []
-  } catch {
-    return []
   }
-}
-
-function buildFinalPrompt(question: string, steps: WorkStep[]): string {
-  if (steps.length === 0) {
-    return `请回答以下研究问题：\n${question}`
-  }
-  const lines = steps.map((step, index) => {
-    const status =
-      step.status === 'done' ? '完成' : step.status === 'failed' ? '失败' : '未完成'
-    return `${index + 1}. ${step.title}（${status}）\n${(step.result || '无结果').slice(0, 3000)}`
-  })
-  return [
-    `研究问题：\n${question}`,
-    `已执行步骤与结果：\n${lines.join('\n\n')}`,
-    '请基于以上内容给出综合回答。'
-  ].join('\n\n')
 }
 
 function finishAborted(assistant: WorkMessage, session: WorkSession): void {
+  markInterruptedTools(assistant)
   if (!assistant.content.trim()) assistant.content = '已停止生成。'
   assistant.streaming = false
   session.updatedAt = Date.now()
 }
 
+/** 按 requestId 把主进程推送的工具状态合并进当前助手消息 */
+function applyToolEvent(assistant: WorkMessage, event: WorkToolEvent): void {
+  if (!assistant.tools) assistant.tools = []
+  const existing = assistant.tools.find((tool) => tool.id === event.id)
+  if (existing) {
+    existing.name = event.name
+    existing.args = event.args
+    existing.status = event.status
+    if (event.output !== undefined) existing.output = event.output
+  } else {
+    assistant.tools.push({
+      id: event.id,
+      name: event.name,
+      args: event.args,
+      status: event.status,
+      ...(event.output !== undefined ? { output: event.output } : {})
+    })
+  }
+}
+
 /**
- * 完整编排：计划拆解 → 逐条执行 → 综合回答。
+ * Agent 对话：主进程负责工具循环，这里只负责消息、流式文字与轨迹状态。
  * assistant 传入时表示重试已有消息，不再新建消息。
  */
 async function runAgent(
@@ -334,103 +336,38 @@ async function runAgent(
 
   try {
     const history = buildHistory(session, assistant.id)
+    const messages: WorkChatMessage[] =
+      history.length > 0 ? history : [{ role: 'user', content: question }]
 
-    // 第一阶段：生成结构化任务计划（偶发失败时重试一次）
-    const planMessages: WorkChatMessage[] = [
-      { role: 'system', content: PLAN_SYSTEM },
-      ...history
-    ]
-    let planResult = await startRequest('plan', planMessages)
-    if (!planResult.ok && !planResult.aborted && !stopRequested.value) {
-      planResult = await startRequest('plan', planMessages)
-    }
-    if (planResult.aborted || stopRequested.value) {
-      finishAborted(assistant, session)
-      return
-    }
-
-    const steps = planResult.ok ? parsePlan(planResult.text) : []
-    if (steps.length > 0) {
-      assistant.steps = steps
-      session.updatedAt = Date.now()
-      await persist()
-      scrollToBottom()
-    }
-
-    // 第二阶段：逐条执行步骤
-    for (const step of steps) {
-      if (stopRequested.value) {
-        finishAborted(assistant, session)
-        return
+    const result = await startRequest('agent', messages, {
+      onDelta: (delta) => {
+        assistant.content += delta
+        scheduleScroll()
+      },
+      onTool: (event) => {
+        if (stopRequested.value) return
+        applyToolEvent(assistant, event)
+        session.updatedAt = Date.now()
+        scheduleScroll()
+        schedulePersist()
       }
-      step.status = 'running'
-      scheduleScroll()
-
-      const stepPrompt = [
-        `研究目标：\n${question}`,
-        `当前步骤：${step.title}`,
-        `步骤说明：${step.detail || '无'}`,
-        '请直接给出这一步的结果。'
-      ].join('\n\n')
-
-      const stepResult = await startRequest('chat', [
-        { role: 'system', content: STEP_SYSTEM },
-        ...history,
-        { role: 'user', content: stepPrompt }
-      ])
-
-      if (stepResult.aborted || stopRequested.value) {
-        if (stepResult.text.trim()) {
-          step.result = stepResult.text.trim()
-          step.status = 'done'
-        } else {
-          step.status = 'pending'
-        }
-        finishAborted(assistant, session)
-        return
-      }
-
-      if (stepResult.ok && stepResult.text.trim()) {
-        step.status = 'done'
-        step.result = stepResult.text.trim()
-      } else {
-        step.status = 'failed'
-        step.result = stepResult.message || '该步骤未返回内容'
-      }
-      session.updatedAt = Date.now()
-      scheduleScroll()
-    }
-
-    if (stopRequested.value) {
-      finishAborted(assistant, session)
-      return
-    }
-
-    // 第三阶段：流式输出综合回答
-    const finalMessages: WorkChatMessage[] = [
-      { role: 'system', content: FINAL_SYSTEM },
-      ...history,
-      { role: 'user', content: buildFinalPrompt(question, steps) }
-    ]
-    const finalResult = await startRequest('chat', finalMessages, (delta) => {
-      assistant.content += delta
-      scheduleScroll()
     })
 
-    if (finalResult.aborted || stopRequested.value) {
+    if (result.aborted || stopRequested.value) {
       finishAborted(assistant, session)
       return
     }
-    if (!finalResult.ok) {
-      assistant.error = finalResult.message || '生成失败'
-    } else if (!assistant.content.trim() && finalResult.text.trim()) {
-      assistant.content = finalResult.text
+    if (!result.ok) {
+      assistant.error = result.message || '生成失败'
+    } else if (!assistant.content.trim() && !assistant.tools?.length) {
+      assistant.error = '模型未返回内容，请重试。'
     }
     session.updatedAt = Date.now()
     await persist()
   } catch (error) {
     assistant.error = error instanceof Error ? error.message : '未知错误'
   } finally {
+    markInterruptedTools(assistant)
     assistant.streaming = false
     session.updatedAt = Date.now()
     busy.value = false
@@ -510,7 +447,7 @@ async function retryMessage(message: WorkMessage): Promise<void> {
   const question = session.messages[userIndex].content
   message.content = ''
   message.error = undefined
-  message.steps = undefined
+  message.tools = undefined
   await runAgent(question, session, { assistant: message })
 }
 
@@ -575,20 +512,41 @@ function serializeSessions(): WorkSession[] {
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
-      ...(message.steps?.length
-        ? { steps: message.steps.map((step) => ({ ...step })) }
+      ...(message.tools?.length
+        ? {
+            tools: message.tools.map((tool) => ({
+              id: tool.id,
+              name: tool.name,
+              args: { ...tool.args },
+              status: tool.status,
+              ...(tool.output ? { output: tool.output.slice(0, 300) } : {})
+            }))
+          }
         : {}),
       ...(message.error ? { error: message.error } : {})
     }))
   }))
 }
 
-async function persist(): Promise<void> {
-  try {
-    await api.saveSessions(serializeSessions())
-  } catch (error) {
-    console.warn('会话保存失败', error)
-  }
+let persistQueue: Promise<void> = Promise.resolve()
+
+function persist(): Promise<void> {
+  persistQueue = persistQueue.then(async () => {
+    try {
+      await api.saveSessions(serializeSessions())
+    } catch (error) {
+      console.warn('会话保存失败', error)
+    }
+  })
+  return persistQueue
+}
+
+function schedulePersist(): void {
+  if (persistTimer !== undefined) return
+  persistTimer = window.setTimeout(() => {
+    persistTimer = undefined
+    void persist()
+  }, 300)
 }
 
 function restoreSession(raw: WorkSession): WorkSession {
@@ -598,15 +556,15 @@ function restoreSession(raw: WorkSession): WorkSession {
     messages: messages.map((message) => ({
       ...message,
       streaming: false,
-      steps: Array.isArray(message.steps)
-        ? message.steps.map((step) =>
-            step.status === 'running'
+      tools: Array.isArray(message.tools)
+        ? message.tools.map((tool) =>
+            tool.status === 'running'
               ? {
-                  ...step,
+                  ...tool,
                   status: 'failed' as const,
-                  result: step.result || '上次执行被中断'
+                  output: tool.output || '上次执行被中断'
                 }
-              : step
+              : tool
           )
         : undefined
     }))
@@ -639,6 +597,11 @@ onMounted(async () => {
       aborted: entry.aborted
     })
   })
+  offTool = api.onTool((event) => {
+    const entry = handlers.get(event.requestId)
+    if (!entry) return
+    entry.onTool?.(event)
+  })
 
   try {
     const [status, list] = await Promise.all([api.settingsStatus(), api.loadSessions()])
@@ -658,8 +621,10 @@ onBeforeUnmount(() => {
   offChunk?.()
   offDone?.()
   offError?.()
+  offTool?.()
   if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
   if (deleteTimer !== undefined) window.clearTimeout(deleteTimer)
+  if (persistTimer !== undefined) window.clearTimeout(persistTimer)
   const requestId = currentRequestId.value
   if (requestId) void api.chatAbort(requestId)
 })
@@ -765,8 +730,8 @@ onBeforeUnmount(() => {
           </div>
           <h3>开始一个研究任务</h3>
           <p>
-            描述研究问题，Agent 会先拆解任务计划，再逐条执行，最后给出综合回答。
-            当前阶段暂未接入检索与知识库，回答基于模型自身知识。
+            描述研究问题，Agent 会自动联网搜索、读取网页、读写本地文件或执行命令，
+            最后给出带来源的结论，全程无需逐步确认。
           </p>
           <div class="suggests">
             <button
@@ -790,31 +755,38 @@ onBeforeUnmount(() => {
               <span class="avatar-core" />
             </div>
             <div class="agent-body">
-              <div v-if="message.steps && message.steps.length" class="plan">
-                <div class="plan-head">
-                  <span>任务计划</span>
-                  <span class="plan-count">{{ message.steps.length }} 步</span>
-                </div>
-                <ol class="timeline">
+              <div v-if="message.tools && message.tools.length" class="agent-trace">
+                <button class="at-head" @click="toggleTools(message)">
+                  <span class="at-title">执行轨迹</span>
+                  <span class="at-count">{{ message.tools.length }} 步</span>
+                  <span class="at-caret" :class="{ 'is-open': toolsOpen(message) }">▾</span>
+                </button>
+                <ul v-if="toolsOpen(message)" class="at-list">
                   <li
-                    v-for="step in message.steps"
-                    :key="step.id"
-                    class="tl-item"
-                    :class="'is-' + step.status"
+                    v-for="tool in message.tools"
+                    :key="tool.id"
+                    class="at-item"
+                    :class="'is-' + tool.status"
                   >
-                    <span class="tl-dot" />
-                    <div class="tl-body">
-                      <div class="tl-head">
-                        <span class="tl-title">{{ step.title }}</span>
-                        <span class="tl-state">{{ statusText(step.status) }}</span>
+                    <span class="at-dot" />
+                    <div class="at-body">
+                      <div class="at-line">
+                        <span class="at-name">{{ toolLabel(tool.name) }}</span>
+                        <span class="at-state">{{ statusText(tool.status) }}</span>
                       </div>
-                      <p v-if="step.detail" class="tl-detail">{{ step.detail }}</p>
-                      <p v-if="step.result" class="tl-result" :title="step.result">
-                        {{ step.result }}
+                      <p v-if="toolArgSummary(tool.args)" class="at-arg">
+                        {{ toolArgSummary(tool.args) }}
+                      </p>
+                      <p
+                        v-if="tool.status === 'failed' && tool.output"
+                        class="at-error"
+                        :title="tool.output"
+                      >
+                        {{ tool.output }}
                       </p>
                     </div>
                   </li>
-                </ol>
+                </ul>
               </div>
 
               <div v-if="message.content || message.streaming" class="bubble agent-bubble">
@@ -836,8 +808,9 @@ onBeforeUnmount(() => {
       <footer class="composer">
         <div class="composer-box">
           <div class="composer-chips">
-            <span class="chip">联网检索 · 下一阶段</span>
-            <span class="chip">知识库 · 下一阶段</span>
+            <span class="chip">联网搜索 · 自动</span>
+            <span class="chip">文件读写 · 自动</span>
+            <span class="chip">本机命令 · 自动</span>
           </div>
           <textarea
             ref="textareaEl"
@@ -848,7 +821,7 @@ onBeforeUnmount(() => {
           />
           <div class="composer-foot">
             <span class="hint">
-              {{ busy ? '正在生成，可随时停止' : '回答由模型生成，未引用外部来源' }}
+              {{ busy ? '正在执行，可随时停止' : 'Agent 自动调用工具，请核对关键来源' }}
             </span>
             <button v-if="busy" class="stop-btn" :disabled="stopping" @click="stopGeneration">
               <span class="stop-icon" />
@@ -880,25 +853,30 @@ onBeforeUnmount(() => {
               <span class="note">0 条</span>
             </div>
             <div class="panel-empty">
-              <p>检索与知识库将在下一阶段接入</p>
-              <span>当前回答完全由模型生成，未引用外部来源，因此这里没有可展示的证据。</span>
+              <p>来源会标注在回答中</p>
+              <span>Agent 联网搜索后会把来源 URL 写入回答，右侧暂不单独汇总证据。</span>
             </div>
           </div>
 
-          <div v-if="currentSteps.length" class="insp-block">
+          <div v-if="currentTools.length" class="insp-block">
             <div class="insp-head">
               <h4>执行轨迹</h4>
-              <span class="note">{{ doneStepCount }} / {{ currentSteps.length }}</span>
+              <span class="note">{{ doneToolCount }} / {{ currentTools.length }}</span>
             </div>
             <ul class="trace">
               <li
-                v-for="step in currentSteps"
-                :key="step.id"
-                :class="'is-' + step.status"
+                v-for="tool in currentTools"
+                :key="tool.id"
+                :class="'is-' + tool.status"
               >
                 <span class="trace-dot" />
-                <span class="trace-title">{{ step.title }}</span>
-                <span class="trace-state">{{ statusText(step.status) }}</span>
+                <span class="trace-title">
+                  {{ toolLabel(tool.name) }}
+                  <template v-if="toolArgSummary(tool.args)">
+                    · {{ toolArgSummary(tool.args) }}
+                  </template>
+                </span>
+                <span class="trace-state">{{ statusText(tool.status) }}</span>
               </li>
             </ul>
           </div>
@@ -1346,122 +1324,138 @@ onBeforeUnmount(() => {
   }
 }
 
-/* ---------------- 任务时间轴 ---------------- */
+/* ---------------- 执行轨迹 ---------------- */
 
-.plan {
-  padding: 10px 12px;
+.agent-trace {
+  padding: 8px 11px;
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
 
-.plan-head {
+.at-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding-bottom: 9px;
+  gap: 8px;
+  width: 100%;
+  padding: 0 0 2px;
+  color: var(--text-2);
+  text-align: left;
+}
+
+.at-title {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: var(--text-2);
 }
 
-.plan-count {
-  font-weight: 400;
+.at-count {
+  flex: 1;
+  font-size: 10.5px;
   color: var(--text-3);
 }
 
-.timeline {
+.at-caret {
+  font-size: 10px;
+  color: var(--text-3);
+  transition: transform 0.16s ease;
+}
+
+.at-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.at-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 7px;
   list-style: none;
 }
 
-.tl-item {
+.at-item {
   position: relative;
-  padding-left: 20px;
+  padding-left: 16px;
 }
 
-.tl-item:not(:last-child)::before {
+.at-item:not(:last-child)::before {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 16px;
+  left: 3px;
+  top: 12px;
   bottom: -8px;
   width: 1px;
   background: var(--line-2);
 }
 
-.tl-dot {
+.at-dot {
   position: absolute;
   left: 0;
   top: 4px;
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   background: var(--bg-1);
   border: 1px solid var(--text-3);
   border-radius: 99px;
 }
 
-.tl-item.is-running .tl-dot {
+.at-item.is-running .at-dot {
   background: var(--accent);
   border-color: var(--accent);
   animation: pulse 1.1s ease-in-out infinite;
 }
 
-.tl-item.is-done .tl-dot {
+.at-item.is-done .at-dot {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.tl-item.is-failed .tl-dot {
+.at-item.is-failed .at-dot {
   background: #ff6b6b;
   border-color: #ff6b6b;
 }
 
-.tl-head {
+.at-line {
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
 
-.tl-title {
-  font-size: 12.5px;
+.at-name {
+  font-size: 12px;
   color: var(--text);
 }
 
-.tl-state {
+.at-state {
   flex: 0 0 auto;
   font-size: 10px;
   color: var(--text-3);
 }
 
-.tl-item.is-running .tl-state {
+.at-item.is-running .at-state {
   color: var(--accent);
 }
 
-.tl-item.is-failed .tl-state {
+.at-item.is-failed .at-state {
   color: #ff8b8b;
 }
 
-.tl-detail {
-  margin-top: 2px;
+.at-arg {
+  margin-top: 1px;
+  overflow: hidden;
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.55;
   color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.tl-result {
-  display: -webkit-box;
-  margin-top: 4px;
-  overflow: hidden;
-  font-size: 11.5px;
-  line-height: 1.62;
-  color: var(--text-2);
-  white-space: pre-wrap;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+.at-error {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #ff9a9a;
+  word-break: break-word;
 }
 
 /* ---------------- 错误与重试 ---------------- */
