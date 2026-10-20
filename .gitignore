@@ -6,3 +6,6 @@ node_modules/
 out/
 dist/
 *.local
+
+# 本地备份目录（不要放进仓库）
+backups/
