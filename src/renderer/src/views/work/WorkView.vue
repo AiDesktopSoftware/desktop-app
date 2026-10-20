@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type {
+  RagChunk,
+  RagProviderId,
+  RagResult,
   WorkCapability,
   WorkCapabilityPermission,
   WorkChatMessage,
@@ -50,6 +53,14 @@ const settingsError = ref('')
 const keyword = ref('')
 const panelOpen = ref(true)
 const tab = ref<'evidence' | 'artifacts'>('evidence')
+
+// 知识库检索只作为当前视图状态，不写入会话持久化
+const ragQuery = ref('')
+const ragProvider = ref<RagProviderId>('local')
+const ragLoading = ref(false)
+const ragResult = ref<RagResult | null>(null)
+const ragError = ref('')
+let ragRequestToken = 0
 
 const draft = ref('')
 const busy = ref(false)
@@ -142,6 +153,51 @@ function evidenceDomain(url: string): string {
     return new URL(url).hostname.replace(/^www\./, '')
   } catch {
     return url
+  }
+}
+
+function ragOrigin(chunk: RagChunk): string {
+  if (chunk.source.url) return evidenceDomain(chunk.source.url)
+  if (chunk.source.path) return chunk.source.path
+  return '来源未标注'
+}
+
+/** 切换会话或新建会话时清空检索视图，并让仍在途的请求失效 */
+function resetRagSearch(): void {
+  ragRequestToken += 1
+  ragQuery.value = ''
+  ragProvider.value = 'local'
+  ragLoading.value = false
+  ragResult.value = null
+  ragError.value = ''
+}
+
+function onRagEnter(event: KeyboardEvent): void {
+  if (event.isComposing) return
+  event.preventDefault()
+  void searchKnowledge()
+}
+
+async function searchKnowledge(): Promise<void> {
+  const text = ragQuery.value.trim()
+  if (!text || ragLoading.value) return
+  const token = ++ragRequestToken
+  ragLoading.value = true
+  ragResult.value = null
+  ragError.value = ''
+  try {
+    const result = await api.searchRag({ query: text, provider: ragProvider.value, topK: 5 })
+    if (token !== ragRequestToken) return
+    if (result.ok) {
+      ragResult.value = result
+    } else {
+      ragError.value = result.message || '检索失败'
+    }
+  } catch (error) {
+    if (token !== ragRequestToken) return
+    ragError.value = error instanceof Error ? error.message : '检索失败'
+  } finally {
+    if (token === ragRequestToken) ragLoading.value = false
   }
 }
 
@@ -524,6 +580,7 @@ function newSession(): void {
   activeSessionId.value = ''
   draft.value = ''
   pendingDeleteId.value = ''
+  resetRagSearch()
   scrollToBottom()
   void nextTick(() => textareaEl.value?.focus())
 }
@@ -532,6 +589,7 @@ function selectSession(id: string): void {
   if (activeSessionId.value === id) return
   activeSessionId.value = id
   pendingDeleteId.value = ''
+  resetRagSearch()
   scrollToBottom()
 }
 
@@ -565,6 +623,7 @@ function confirmDelete(id: string): void {
   if (activeSessionId.value === id) {
     const next = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0]
     activeSessionId.value = next?.id ?? ''
+    resetRagSearch()
   }
   void persist()
 }
@@ -1032,6 +1091,78 @@ onBeforeUnmount(() => {
 
       <div class="insp-scroll">
         <template v-if="tab === 'evidence'">
+          <div class="insp-block rag-block">
+            <div class="insp-head">
+              <h4>知识库检索</h4>
+              <span class="note">{{ ragResult?.chunks.length ?? 0 }} 条</span>
+            </div>
+            <div class="rag-form">
+              <input
+                v-model="ragQuery"
+                type="text"
+                placeholder="输入检索问题，Enter 检索"
+                :disabled="ragLoading"
+                @keydown.enter="onRagEnter"
+              />
+              <select v-model="ragProvider" :disabled="ragLoading">
+                <option value="local">本地库</option>
+                <option value="cloud">云端公共库</option>
+                <option value="both">双路合并</option>
+              </select>
+              <button
+                class="rag-run"
+                :disabled="ragLoading || !ragQuery.trim()"
+                @click="searchKnowledge"
+              >
+                {{ ragLoading ? '检索中…' : '检索' }}
+              </button>
+            </div>
+
+            <div v-if="ragError" class="rag-error">{{ ragError }}</div>
+
+            <div v-if="ragResult && ragResult.chunks.length" class="rag-results">
+              <article
+                v-for="chunk in ragResult.chunks"
+                :key="chunk.chunkId"
+                class="rag-item"
+                :class="{ 'has-demo': chunk.demo }"
+              >
+                <span v-if="chunk.demo" class="rag-demo-badge">演示</span>
+                <p class="rag-item-text">{{ chunk.text }}</p>
+                <div class="rag-source">
+                  <a
+                    v-if="chunk.source.url"
+                    class="rag-source-title"
+                    :href="chunk.source.url"
+                    target="_blank"
+                    rel="noreferrer"
+                    :title="chunk.source.title"
+                  >
+                    {{ chunk.source.title }}
+                  </a>
+                  <span v-else class="rag-source-title" :title="chunk.source.title">
+                    {{ chunk.source.title }}
+                  </span>
+                  <span class="rag-origin">{{ ragOrigin(chunk) }}</span>
+                </div>
+                <div class="rag-foot">
+                  <span class="rag-provider" :class="'is-' + chunk.provider">
+                    {{ chunk.provider === 'local' ? '本地' : '云端' }}
+                  </span>
+                  <span class="rag-score">分数 {{ chunk.score.toFixed(2) }}</span>
+                </div>
+              </article>
+            </div>
+
+            <div v-if="ragResult?.note" class="rag-note">{{ ragResult.note }}</div>
+            <div
+              v-else-if="!ragLoading && ragResult && ragResult.chunks.length === 0"
+              class="rag-empty"
+            >
+              没有匹配的片段。
+            </div>
+          </div>
+
           <div class="insp-block">
             <div class="insp-head">
               <h4>检索来源</h4>
@@ -2086,6 +2217,220 @@ onBeforeUnmount(() => {
   font-size: 10.5px;
   line-height: 1.7;
   color: var(--text-3);
+}
+
+/* ---------------- 知识库检索（P0 演示通道） ---------------- */
+
+.rag-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 78px 46px;
+  gap: 5px;
+}
+
+.rag-form input,
+.rag-form select,
+.rag-run {
+  height: 30px;
+  min-width: 0;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
+.rag-form input {
+  padding: 0 8px;
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  outline: none;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.rag-form input::placeholder {
+  color: var(--text-3);
+}
+
+.rag-form input:focus,
+.rag-form select:focus {
+  border-color: var(--accent);
+}
+
+.rag-form select {
+  padding: 0 2px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  outline: none;
+  cursor: pointer;
+}
+
+.rag-form select option {
+  color: var(--text);
+  background: var(--bg-2);
+}
+
+.rag-form input:disabled,
+.rag-form select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rag-run {
+  font-weight: 500;
+  color: #0b0d11;
+  background: var(--accent);
+  transition: filter 0.16s ease, opacity 0.16s ease;
+}
+
+.rag-run:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.rag-run:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rag-results {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.rag-item {
+  position: relative;
+  padding: 8px 9px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  transition: border-color 0.16s ease;
+}
+
+.rag-item:hover {
+  border-color: var(--line-2);
+}
+
+.rag-item.has-demo {
+  padding-top: 24px;
+}
+
+.rag-item-text {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.rag-demo-badge {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  padding: 0 6px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 16px;
+  color: #201203;
+  background: #ffb04d;
+  border-radius: 99px;
+  box-shadow: 0 0 0 1px rgba(255, 176, 77, 0.35);
+}
+
+.rag-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 6px;
+}
+
+.rag-source-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--text-2);
+  text-decoration: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+a.rag-source-title:hover {
+  color: var(--accent);
+}
+
+.rag-origin {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  font-size: 9.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rag-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.rag-provider {
+  padding: 0 6px;
+  font-size: 9px;
+  line-height: 16px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 99px;
+}
+
+.rag-provider.is-cloud {
+  color: #8fb4ff;
+  background: rgba(96, 145, 255, 0.14);
+}
+
+.rag-score {
+  margin-left: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.rag-note {
+  margin-top: 8px;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius-sm);
+}
+
+.rag-error {
+  margin-top: 8px;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.28);
+  border-radius: var(--radius-sm);
+}
+
+.rag-empty {
+  margin-top: 8px;
+  padding: 10px 9px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-align: center;
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
 }
 
 .trace {

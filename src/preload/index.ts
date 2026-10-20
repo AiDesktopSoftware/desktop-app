@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
+  RagQuery,
+  RagResult,
   WorkApi,
   WorkCapability,
   WorkCapabilityId,
@@ -46,7 +48,9 @@ const workApi: WorkApi = {
   listCapabilities: () =>
     ipcRenderer.invoke('work:cap:list') as Promise<WorkCapability[]>,
   runCapability: (id: WorkCapabilityId, args: Record<string, unknown>) =>
-    ipcRenderer.invoke('work:cap:run', { id, args }) as Promise<WorkCapabilityRunResult>
+    ipcRenderer.invoke('work:cap:run', { id, args }) as Promise<WorkCapabilityRunResult>,
+  searchRag: (query: RagQuery) =>
+    ipcRenderer.invoke('work:rag:search', query) as Promise<RagResult>
 }
 
 if (process.contextIsolated) {

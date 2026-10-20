@@ -1,6 +1,16 @@
 // 工作模式（负责人：赵）的共享数据类型
 // 主进程、预加载和渲染层都通过 type-only import 复用，避免类型漂移
 
+import type { RagQuery, RagResult } from '../../../../main/work/rag/types'
+
+export type {
+  RagChunk,
+  RagProviderId,
+  RagQuery,
+  RagResult,
+  RagSource
+} from '../../../../main/work/rag/types'
+
 export type WorkRole = 'user' | 'assistant'
 export type WorkToolStatus = 'running' | 'done' | 'failed'
 
@@ -129,4 +139,5 @@ export interface WorkApi {
     id: WorkCapabilityId,
     args: Record<string, unknown>
   ): Promise<WorkCapabilityRunResult>
+  searchRag(query: RagQuery): Promise<RagResult>
 }

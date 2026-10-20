@@ -5,6 +5,8 @@ import { getConfig, isConfigured, maskApiKey } from './config'
 import { chatOnce, LlmError, streamChat, type LlmMessage } from './llm'
 import { loadSessions, saveSessions } from './store'
 import { executeTool } from './tools'
+import { searchRag } from './rag/provider'
+import type { RagQuery } from './rag/types'
 import type { WorkSettingsStatus } from '../../renderer/src/views/work/types'
 
 interface ChatStartPayload {
@@ -153,6 +155,9 @@ export function registerWorkIpc(): void {
 
   // 能力元数据：只下发界面需要的字段，不包含执行函数与 JSON Schema
   ipcMain.handle('work:cap:list', () => capabilityMetadata())
+
+  // 知识库检索：P0 只跑通统一契约，真实通道由 provider 内部决定是否可用
+  ipcMain.handle('work:rag:search', (_event, payload: RagQuery) => searchRag(payload))
 
   /**
    * 界面直接执行能力，与 Agent 工具调用共用 executeTool。
