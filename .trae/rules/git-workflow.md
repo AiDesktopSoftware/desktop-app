@@ -40,10 +40,11 @@
 
 ## 本地备份（防误删，用户明确要求）
 
-- 一键备份：`npm run backup`（脚本 `scripts/backup.ps1`）
-- 双保险：仓库外文件快照 `E:\programFiles\traeCode\_backups\project3P\<时间戳>`（保留最近 20 份）
-  + git 标签 `snapshot/<时间戳>`（并推送到远程）
-- 已跑通的代码改动完成后、以及大改之前，都应先跑一次 `npm run backup`
+- **自动**：`.githooks/pre-commit` 在每次 commit 前自动生成一次文件快照（不打标签、不推送），无需任何人记得执行
+  - 钩子依赖 `core.hooksPath`，新克隆仓库后需执行一次：`git config core.hooksPath .githooks`
+- **手动里程碑**：`npm run backup`（快照 + git 标签 `snapshot/<时间戳>` + 推送标签）
+- 快照位置：`E:\programFiles\traeCode\_backups\project3P\<时间戳>`，排除 `node_modules`、`out`、`dist`、`.git`，保留最近 20 份
+- 已跑通的代码改动完成后、以及大改之前，仍应执行一次 `npm run backup` 留下可回溯标签
 - 严禁用 `git reset --hard`、`git clean -fdx`、删除目录等破坏性操作清理工作区
 
 ## 分支与评审

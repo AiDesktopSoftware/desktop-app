@@ -1,5 +1,11 @@
 ﻿# Local backup + milestone tag: two layers of protection.
-# Usage: npm run backup
+# Usage:
+#   npm run backup         -> snapshot + git tag + push tag (manual milestone)
+#   backup.ps1 -NoTag      -> snapshot only (used by the auto pre-commit hook)
+
+param(
+    [switch]$NoTag
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -24,6 +30,11 @@ Get-ChildItem $root -Directory |
     Remove-Item -Recurse -Force
 
 Write-Output "snapshot: $target"
+
+# Auto mode (pre-commit hook): snapshot only, no tag, no push.
+if ($NoTag) {
+    exit 0
+}
 
 # 2) Git tag: points at the current commit, always recoverable.
 Set-Location $source
