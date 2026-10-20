@@ -12,8 +12,9 @@
 
 ## 远程仓库
 
-- 组织：`ai-desktop-software`
-- 远程地址：`https://github.com/ai-desktop-software/desktop-app.git`
+- 组织：`AiDesktopSoftware`（注意：**无连字符**；`ai-desktop-software` 是另一个无关组织，不要用）
+- 远程地址：`https://github.com/AiDesktopSoftware/desktop-app.git`
+- 本机凭据账号：`ducenwu`，在组织中角色为 admin，可直接推送
 
 ## 网络（GitHub 直连不通）
 
