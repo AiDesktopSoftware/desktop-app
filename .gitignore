@@ -7,5 +7,8 @@ out/
 dist/
 *.local
 
+# 本地配置（含 API Key，绝不进 Git）
+config.local.json
+
 # 本地备份目录（不要放进仓库）
 backups/
