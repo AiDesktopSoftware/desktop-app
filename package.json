@@ -1,0 +1,13 @@
+{
+  "name": "ai-desktop-software",
+  "version": "0.1.0",
+  "description": "AI 多源信息采集与研究助手（桌面端）",
+  "main": "./out/main/index.js",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  }
+}
