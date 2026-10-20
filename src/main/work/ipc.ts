@@ -1,4 +1,5 @@
 import { dialog, ipcMain, type WebContents } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { runAgent } from './agent'
 import { capabilityMetadata, getCapability } from './capabilities'
 import { getConfig, getPreferences, isConfigured, maskApiKey, savePreferences } from './config'
@@ -9,7 +10,15 @@ import { loadSessions, saveSessions } from './store'
 import { executeTool } from './tools'
 import { searchRag } from './rag/provider'
 import type { RagQuery } from './rag/types'
+import {
+  listRuns,
+  listWorkflows,
+  removeWorkflow,
+  runWorkflow,
+  saveWorkflow
+} from './workflow/engine'
 import type {
+  WorkFlowListResult,
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
@@ -28,6 +37,7 @@ interface ChatStartPayload {
 
 let registered = false
 const controllers = new Map<string, AbortController>()
+const flowControllers = new Map<string, AbortController>()
 
 function normalizeMessages(input: unknown): LlmMessage[] {
   if (!Array.isArray(input)) return []
@@ -195,6 +205,108 @@ export function registerWorkIpc(): void {
       }
     }
   )
+
+  // ---------------- 工作流编排 ----------------
+
+  ipcMain.handle('work:flow:list', async (): Promise<WorkFlowListResult> => {
+    try {
+      return { ok: true, workflows: await listWorkflows() }
+    } catch (error) {
+      return { ok: false, workflows: [], message: `读取工作流失败：${errorDetail(error)}` }
+    }
+  })
+
+  ipcMain.handle('work:flow:save', async (_event, payload: { workflow?: unknown }) => {
+    try {
+      return await saveWorkflow(payload?.workflow)
+    } catch (error) {
+      return { ok: false, message: `保存工作流失败：${errorDetail(error)}` }
+    }
+  })
+
+  ipcMain.handle('work:flow:remove', async (_event, payload: { id?: unknown }) => {
+    try {
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      return await removeWorkflow(id)
+    } catch (error) {
+      return { ok: false, message: `删除工作流失败：${errorDetail(error)}` }
+    }
+  })
+
+  // 异步启动后立即返回 runId，进度通过 work:workflow:step / work:workflow:done 推送
+  ipcMain.handle(
+    'work:flow:run',
+    (
+      event,
+      payload: { workflowId?: unknown; variables?: unknown; runId?: unknown }
+    ): { ok: boolean; runId?: string; message?: string } => {
+      const workflowId = typeof payload?.workflowId === 'string' ? payload.workflowId : ''
+      if (!workflowId) return { ok: false, message: '缺少工作流标识，无法运行' }
+
+      const runId =
+        typeof payload?.runId === 'string' && payload.runId ? payload.runId : randomUUID()
+      const variables: Record<string, string> = {}
+      if (
+        payload?.variables &&
+        typeof payload.variables === 'object' &&
+        !Array.isArray(payload.variables)
+      ) {
+        for (const [key, value] of Object.entries(payload.variables as Record<string, unknown>)) {
+          if (typeof value === 'string') variables[key] = value
+        }
+      }
+
+      // 同一 runId 重复发起时先中断旧运行
+      flowControllers.get(runId)?.abort()
+      const controller = new AbortController()
+      flowControllers.set(runId, controller)
+      const sender = event.sender
+
+      // 窗口销毁时中止运行，避免后台空转
+      const onDestroyed = (): void => controller.abort()
+      sender.once('destroyed', onDestroyed)
+
+      void runWorkflow({
+        workflowId,
+        variables,
+        runId,
+        signal: controller.signal,
+        send: (channel, body) => safeSend(sender, channel, body)
+      })
+        .catch((error) => {
+          safeSend(sender, 'work:workflow:done', {
+            runId,
+            ok: false,
+            result: '',
+            message: `工作流运行失败：${errorDetail(error)}`
+          })
+        })
+        .finally(() => {
+          try {
+            sender.removeListener('destroyed', onDestroyed)
+          } catch {
+            // 窗口已销毁时移除监听可能失败，忽略
+          }
+          if (flowControllers.get(runId) === controller) flowControllers.delete(runId)
+        })
+
+      return { ok: true, runId }
+    }
+  )
+
+  ipcMain.handle('work:flow:abort', (_event, payload: { runId?: unknown }) => {
+    const runId = typeof payload?.runId === 'string' ? payload.runId : ''
+    if (runId) flowControllers.get(runId)?.abort()
+    return { ok: true }
+  })
+
+  ipcMain.handle('work:flow:runs', async () => {
+    try {
+      return { ok: true, runs: await listRuns() }
+    } catch (error) {
+      return { ok: false, runs: [], message: `读取运行记录失败：${errorDetail(error)}` }
+    }
+  })
 
   // 能力元数据：只下发界面需要的字段，不包含执行函数与 JSON Schema
   ipcMain.handle('work:cap:list', () => capabilityMetadata())

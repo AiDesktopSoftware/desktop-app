@@ -7,13 +7,21 @@ import type {
   WorkCapabilityId,
   WorkCapabilityRunResult,
   WorkChatStartPayload,
+  WorkFlowDoneEvent,
+  WorkFlowListResult,
+  WorkFlowRemoveResult,
+  WorkFlowRunResult,
+  WorkFlowRunsResult,
+  WorkFlowSaveResult,
+  WorkFlowStepEvent,
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
   WorkPreferences,
   WorkPreferencesResult,
   WorkSession,
-  WorkSettingsStatus
+  WorkSettingsStatus,
+  WorkflowDefinition
 } from '../renderer/src/views/work/types'
 
 // 渲染进程与主进程之间的安全通道，后续各模块的本地能力（读写文件、调用后端）都从这里暴露
@@ -64,7 +72,20 @@ const workApi: WorkApi = {
   prefsGet: () =>
     ipcRenderer.invoke('work:prefs:get') as Promise<WorkPreferencesResult>,
   prefsSet: (patch: Partial<WorkPreferences>) =>
-    ipcRenderer.invoke('work:prefs:set', { patch }) as Promise<WorkPreferencesResult>
+    ipcRenderer.invoke('work:prefs:set', { patch }) as Promise<WorkPreferencesResult>,
+  flowList: () => ipcRenderer.invoke('work:flow:list') as Promise<WorkFlowListResult>,
+  flowSave: (workflow: WorkflowDefinition) =>
+    ipcRenderer.invoke('work:flow:save', { workflow }) as Promise<WorkFlowSaveResult>,
+  flowRemove: (id: string) =>
+    ipcRenderer.invoke('work:flow:remove', { id }) as Promise<WorkFlowRemoveResult>,
+  flowRun: (payload: { workflowId: string; variables: Record<string, string>; runId: string }) =>
+    ipcRenderer.invoke('work:flow:run', payload) as Promise<WorkFlowRunResult>,
+  flowAbort: async (runId: string) => {
+    await ipcRenderer.invoke('work:flow:abort', { runId })
+  },
+  flowRuns: () => ipcRenderer.invoke('work:flow:runs') as Promise<WorkFlowRunsResult>,
+  onFlowStep: (cb) => subscribe<WorkFlowStepEvent>('work:workflow:step', cb),
+  onFlowDone: (cb) => subscribe<WorkFlowDoneEvent>('work:workflow:done', cb)
 }
 
 if (process.contextIsolated) {

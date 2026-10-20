@@ -5,6 +5,7 @@ import type {
   RagChunk,
   RagProviderId,
   RagResult,
+  RunStep,
   WorkCapability,
   WorkCapabilityPermission,
   WorkChatMessage,
@@ -15,7 +16,9 @@ import type {
   WorkSession,
   WorkSettingsStatus,
   WorkToolCall,
-  WorkToolEvent
+  WorkToolEvent,
+  WorkflowDefinition,
+  WorkflowRun
 } from './types'
 
 // 【工作模式】负责人：赵
@@ -109,6 +112,25 @@ const prefsError = ref('')
 const prefsSaved = ref(false)
 const prefsPanelEl = ref<HTMLElement | null>(null)
 
+// 工作流弹层：模板选择 -> 填变量 -> 顺序运行 -> 步骤进度与结果
+const flowOpen = ref(false)
+const flowList = ref<WorkflowDefinition[]>([])
+const flowSelected = ref<WorkflowDefinition | null>(null)
+const flowVars = ref<Record<string, string>>({})
+const flowRunning = ref(false)
+const flowStopping = ref(false)
+const flowRunId = ref('')
+const flowSteps = ref<RunStep[]>([])
+const flowResult = ref('')
+const flowError = ref('')
+const flowDone = ref(false)
+const flowStartedAt = ref(0)
+const flowElapsed = ref(0)
+const flowRuns = ref<WorkflowRun[]>([])
+const flowDetailRun = ref<WorkflowRun | null>(null)
+const flowExpanded = ref<Record<string, boolean>>({})
+const flowPanelEl = ref<HTMLElement | null>(null)
+
 const handlers = new Map<string, PendingRequest>()
 let scrollTimer: number | undefined
 let deleteTimer: number | undefined
@@ -119,6 +141,8 @@ let offDone: (() => void) | undefined
 let offError: (() => void) | undefined
 let offTool: (() => void) | undefined
 let offEvidence: (() => void) | undefined
+let offFlowStep: (() => void) | undefined
+let offFlowDone: (() => void) | undefined
 
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeSessionId.value) ?? null
@@ -735,6 +759,7 @@ function confirmDelete(id: string): void {
 
 function openCaps(): void {
   if (prefsOpen.value) closePrefs()
+  if (flowOpen.value) closeFlows()
   capOpen.value = true
   capSelected.value = null
   capArgs.value = {}
@@ -821,6 +846,7 @@ function applyPrefs(next: WorkPreferences): void {
 
 async function openPrefs(): Promise<void> {
   if (capOpen.value) closeCaps()
+  if (flowOpen.value) closeFlows()
   prefsOpen.value = true
   prefsSaved.value = false
   prefsError.value = ''
@@ -911,10 +937,228 @@ async function savePrefs(): Promise<void> {
   }
 }
 
+// ---------------- 工作流 ----------------
+
+const builtinFlows = computed(() => flowList.value.filter((workflow) => workflow.builtin))
+const userFlows = computed(() => flowList.value.filter((workflow) => !workflow.builtin))
+const flowRecentRuns = computed(() => flowRuns.value.slice(0, 3))
+
+const flowCanRun = computed(() => {
+  const workflow = flowSelected.value
+  if (!workflow || flowRunning.value) return false
+  return workflow.variables.every(
+    (variable) => !variable.required || (flowVars.value[variable.key] ?? '').trim().length > 0
+  )
+})
+
+const flowHint = computed(() =>
+  flowRunning.value ? '正在按顺序执行，可随时停止' : '按顺序执行步骤，变量会替换到参数中'
+)
+
+const flowResultText = computed(() => {
+  const text = flowResult.value
+  return text.length > 4000 ? `${text.slice(0, 4000)}\n……` : text
+})
+
+function flowStatusText(status: RunStep['status']): string {
+  switch (status) {
+    case 'running':
+      return '运行中'
+    case 'done':
+      return '完成'
+    case 'failed':
+      return '失败'
+    case 'skipped':
+      return '跳过'
+    default:
+      return '待运行'
+  }
+}
+
+function flowRunStatusText(status: WorkflowRun['status']): string {
+  switch (status) {
+    case 'done':
+      return '完成'
+    case 'failed':
+      return '失败'
+    case 'aborted':
+      return '已停止'
+    default:
+      return '运行中'
+  }
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.max(ms, 0) / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`
+  const whole = Math.round(seconds)
+  return `${Math.floor(whole / 60)} 分 ${whole % 60} 秒`
+}
+
+function flowRunBrief(run: WorkflowRun): string {
+  const text = (run.result ?? '').replace(/\s+/g, ' ').trim()
+  if (text) return text.length > 36 ? `${text.slice(0, 36)}…` : text
+  const done = run.steps.filter((step) => step.status === 'done').length
+  return `${done} / ${run.steps.length} 步完成`
+}
+
+async function refreshFlows(): Promise<void> {
+  try {
+    const result = await api.flowList()
+    if (!result.ok) {
+      flowError.value = result.message || '读取工作流失败'
+      return
+    }
+    flowList.value = Array.isArray(result.workflows) ? result.workflows : []
+  } catch (error) {
+    flowError.value = error instanceof Error ? error.message : '读取工作流失败'
+  }
+}
+
+async function refreshFlowRuns(): Promise<void> {
+  try {
+    const result = await api.flowRuns()
+    if (result.ok) flowRuns.value = Array.isArray(result.runs) ? result.runs : []
+  } catch {
+    // 运行记录读取失败不影响当前运行
+  }
+}
+
+async function openFlows(): Promise<void> {
+  if (prefsOpen.value) closePrefs()
+  if (capOpen.value) closeCaps()
+  flowOpen.value = true
+  flowError.value = ''
+  void nextTick(() => flowPanelEl.value?.focus())
+
+  await refreshFlows()
+  await refreshFlowRuns()
+  if (!flowSelected.value && flowList.value.length > 0) selectFlow(flowList.value[0])
+}
+
+function closeFlows(): void {
+  // 运行仍在后台继续，事件会写入状态，重新打开即可看到最新进度
+  flowOpen.value = false
+}
+
+function toggleFlows(): void {
+  if (flowOpen.value) {
+    closeFlows()
+  } else {
+    void openFlows()
+  }
+}
+
+function selectFlow(workflow: WorkflowDefinition): void {
+  if (flowRunning.value) return
+  flowSelected.value = workflow
+  const values: Record<string, string> = {}
+  for (const variable of workflow.variables) values[variable.key] = ''
+  flowVars.value = values
+  flowSteps.value = workflow.steps.map((step) => ({
+    id: step.id,
+    label: step.label,
+    status: 'pending' as const
+  }))
+  flowResult.value = ''
+  flowError.value = ''
+  flowDone.value = false
+  flowElapsed.value = 0
+  flowDetailRun.value = null
+  flowExpanded.value = {}
+}
+
+function toggleFlowStep(id: string): void {
+  flowExpanded.value[id] = !flowExpanded.value[id]
+}
+
+async function runFlow(): Promise<void> {
+  const workflow = flowSelected.value
+  if (!workflow || flowRunning.value) return
+
+  const missing = workflow.variables.filter(
+    (variable) => variable.required && !(flowVars.value[variable.key] ?? '').trim()
+  )
+  if (missing.length > 0) {
+    flowError.value = `请先填写：${missing.map((variable) => variable.label).join('、')}`
+    return
+  }
+
+  flowError.value = ''
+  flowResult.value = ''
+  flowDone.value = false
+  flowElapsed.value = 0
+  flowDetailRun.value = null
+  flowExpanded.value = {}
+  flowSteps.value = workflow.steps.map((step) => ({
+    id: step.id,
+    label: step.label,
+    status: 'pending' as const
+  }))
+
+  const runId = uid()
+  flowRunId.value = runId
+  flowRunning.value = true
+  flowStopping.value = false
+  flowStartedAt.value = Date.now()
+
+  try {
+    const result = await api.flowRun({
+      workflowId: workflow.id,
+      variables: { ...flowVars.value },
+      runId
+    })
+    if (!result.ok) {
+      flowRunning.value = false
+      flowRunId.value = ''
+      flowError.value = result.message || '启动工作流失败'
+    }
+  } catch (error) {
+    flowRunning.value = false
+    flowRunId.value = ''
+    flowError.value = error instanceof Error ? error.message : '启动工作流失败'
+  }
+}
+
+async function stopFlow(): Promise<void> {
+  if (!flowRunning.value || flowStopping.value) return
+  flowStopping.value = true
+  const runId = flowRunId.value
+  if (!runId) return
+  try {
+    await api.flowAbort(runId)
+  } catch {
+    // 中断失败时等待主进程自行结束
+  }
+}
+
+async function removeFlow(workflow: WorkflowDefinition): Promise<void> {
+  if (flowRunning.value) return
+  flowError.value = ''
+  try {
+    const result = await api.flowRemove(workflow.id)
+    if (!result.ok) {
+      flowError.value = result.message || '删除工作流失败'
+      return
+    }
+    if (flowSelected.value?.id === workflow.id) flowSelected.value = null
+    await refreshFlows()
+    if (!flowSelected.value && flowList.value.length > 0) selectFlow(flowList.value[0])
+  } catch (error) {
+    flowError.value = error instanceof Error ? error.message : '删除工作流失败'
+  }
+}
+
+/** 查看历史运行的步骤状态（只读），再点一次收起 */
+function openRunDetail(run: WorkflowRun): void {
+  flowDetailRun.value = flowDetailRun.value?.id === run.id ? null : run
+}
+
 function onGlobalKeydown(event: KeyboardEvent): void {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     if (prefsOpen.value) closePrefs()
+    if (flowOpen.value) closeFlows()
     toggleCaps()
     return
   }
@@ -927,6 +1171,11 @@ function onGlobalKeydown(event: KeyboardEvent): void {
     if (capOpen.value) {
       event.preventDefault()
       closeCaps()
+      return
+    }
+    if (flowOpen.value) {
+      event.preventDefault()
+      closeFlows()
     }
   }
 }
@@ -1046,6 +1295,25 @@ onMounted(async () => {
     if (!entry) return
     entry.onEvidence?.(event.items)
   })
+  offFlowStep = api.onFlowStep((event) => {
+    if (event.runId !== flowRunId.value) return
+    const step = flowSteps.value.find((item) => item.id === event.stepId)
+    if (!step) return
+    step.status = event.status
+    if (event.output !== undefined) step.output = event.output
+    if (event.message !== undefined) step.error = event.message
+  })
+  offFlowDone = api.onFlowDone((event) => {
+    if (event.runId !== flowRunId.value) return
+    flowRunning.value = false
+    flowStopping.value = false
+    flowDone.value = event.ok
+    flowElapsed.value = Math.max(Date.now() - flowStartedAt.value, 0)
+    flowResult.value = event.result ?? ''
+    if (!event.ok && event.message) flowError.value = event.message
+    flowRunId.value = ''
+    void refreshFlowRuns()
+  })
   window.addEventListener('keydown', onGlobalKeydown)
 
   // 能力元数据加载失败时面板给出提示，不影响会话与对话
@@ -1087,6 +1355,8 @@ onBeforeUnmount(() => {
   offError?.()
   offTool?.()
   offEvidence?.()
+  offFlowStep?.()
+  offFlowDone?.()
   window.removeEventListener('keydown', onGlobalKeydown)
   if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
   if (deleteTimer !== undefined) window.clearTimeout(deleteTimer)
@@ -1094,6 +1364,8 @@ onBeforeUnmount(() => {
   if (prefsSavedTimer !== undefined) window.clearTimeout(prefsSavedTimer)
   const requestId = currentRequestId.value
   if (requestId) void api.chatAbort(requestId)
+  const runId = flowRunId.value
+  if (runId) void api.flowAbort(runId)
 })
 </script>
 
@@ -1181,6 +1453,14 @@ onBeforeUnmount(() => {
             </svg>
             能力
             <span class="cap-kbd">Ctrl K</span>
+          </button>
+          <button class="cap-btn" title="打开工作流（模板 / 参数 / 运行）" @click="toggleFlows">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M4 6h7M4 12h10M4 18h7" />
+              <circle cx="16" cy="6" r="2" />
+              <circle cx="18" cy="18" r="2" />
+            </svg>
+            工作流
           </button>
           <button
             class="icon-btn"
@@ -1657,6 +1937,214 @@ onBeforeUnmount(() => {
             <button class="prefs-cancel" @click="closePrefs">取消</button>
           </div>
         </template>
+      </div>
+    </div>
+    <!-- 工作流：模板 / 参数 / 步骤进度 / 结果 / 最近运行 -->
+    <div v-if="flowOpen" class="cap-mask" @click.self="closeFlows">
+      <div ref="flowPanelEl" class="cap-panel flow-panel" tabindex="-1">
+        <header class="cap-head">
+          <h4>工作流</h4>
+          <span class="cap-kbd">模板编排 · MVP</span>
+          <button class="cap-close" title="关闭" @click="closeFlows">×</button>
+        </header>
+
+        <div class="flow-body">
+          <aside class="flow-side">
+            <div class="flow-group">
+              <div class="rail-label">内置模板</div>
+              <div
+                v-for="workflow in builtinFlows"
+                :key="workflow.id"
+                class="flow-item"
+                :class="{
+                  'is-active': flowSelected?.id === workflow.id,
+                  'is-disabled': flowRunning && flowSelected?.id !== workflow.id
+                }"
+                role="button"
+                tabindex="0"
+                @click="selectFlow(workflow)"
+                @keydown.enter="selectFlow(workflow)"
+              >
+                <span class="flow-item-top">
+                  <span class="flow-name" :title="workflow.name">{{ workflow.name }}</span>
+                  <span class="flow-badge">模板</span>
+                </span>
+                <span class="flow-desc">{{ workflow.description }}</span>
+              </div>
+              <div v-if="builtinFlows.length === 0" class="flow-tip">模板加载中…</div>
+            </div>
+
+            <div class="flow-group">
+              <div class="rail-label">我的流程</div>
+              <div
+                v-for="workflow in userFlows"
+                :key="workflow.id"
+                class="flow-item"
+                :class="{
+                  'is-active': flowSelected?.id === workflow.id,
+                  'is-disabled': flowRunning && flowSelected?.id !== workflow.id
+                }"
+                role="button"
+                tabindex="0"
+                @click="selectFlow(workflow)"
+                @keydown.enter="selectFlow(workflow)"
+              >
+                <span class="flow-item-top">
+                  <span class="flow-name" :title="workflow.name">{{ workflow.name }}</span>
+                  <button
+                    class="flow-del"
+                    title="删除该流程"
+                    :disabled="flowRunning"
+                    @click.stop="removeFlow(workflow)"
+                  >
+                    ×
+                  </button>
+                </span>
+                <span class="flow-desc">{{ workflow.description || '自定义流程' }}</span>
+              </div>
+              <div v-if="userFlows.length === 0" class="flow-tip">
+                还没有自定义流程，内置模板可直接运行。
+              </div>
+            </div>
+          </aside>
+
+          <div class="flow-main">
+            <div v-if="!flowSelected">
+              <div class="cap-tip">从左侧选择一个工作流开始。</div>
+              <div v-if="flowError" class="rag-error">{{ flowError }}</div>
+            </div>
+
+            <template v-else>
+              <div class="flow-title-row">
+                <span class="flow-title">{{ flowSelected.name }}</span>
+                <span v-if="flowSelected.builtin" class="flow-badge">模板</span>
+                <span class="flow-step-count">{{ flowSteps.length }} 步</span>
+              </div>
+              <p class="flow-desc flow-desc-line">{{ flowSelected.description }}</p>
+
+              <div v-if="flowSelected.variables.length" class="flow-vars">
+                <label
+                  v-for="variable in flowSelected.variables"
+                  :key="variable.key"
+                  class="cap-field"
+                >
+                  <span class="cap-field-label">
+                    {{ variable.label }}
+                    <em v-if="variable.required" class="flow-required">*</em>
+                  </span>
+                  <input
+                    v-model="flowVars[variable.key]"
+                    type="text"
+                    :placeholder="variable.placeholder || ''"
+                    :disabled="flowRunning"
+                  />
+                </label>
+              </div>
+
+              <ul class="flow-steps">
+                <li
+                  v-for="(step, index) in flowSteps"
+                  :key="step.id"
+                  class="flow-step"
+                  :class="'is-' + step.status"
+                >
+                  <button class="flow-step-head" @click="toggleFlowStep(step.id)">
+                    <span class="flow-step-index">{{ index + 1 }}</span>
+                    <span class="flow-step-name" :title="step.label">{{ step.label }}</span>
+                    <span class="flow-step-state">{{ flowStatusText(step.status) }}</span>
+                    <span
+                      v-if="step.output || step.error"
+                      class="flow-step-caret"
+                      :class="{ 'is-open': flowExpanded[step.id] }"
+                    >
+                      ▾
+                    </span>
+                  </button>
+                  <pre
+                    v-if="flowExpanded[step.id] && (step.output || step.error)"
+                    class="flow-step-output"
+                  >{{ step.error || step.output }}</pre>
+                </li>
+              </ul>
+
+              <div class="cap-actions">
+                <button class="cap-run" :disabled="!flowCanRun" @click="runFlow">
+                  {{ flowRunning ? '运行中…' : '运行' }}
+                </button>
+                <button
+                  v-if="flowRunning"
+                  class="flow-stop"
+                  :disabled="flowStopping"
+                  @click="stopFlow"
+                >
+                  {{ flowStopping ? '停止中…' : '停止' }}
+                </button>
+                <span class="cap-hint">{{ flowHint }}</span>
+              </div>
+
+              <div v-if="flowError" class="rag-error">{{ flowError }}</div>
+
+              <div v-if="flowResultText" class="flow-result" :class="{ 'is-error': !flowDone }">
+                <div class="cap-result-head">
+                  <span class="cap-result-state">{{ flowDone ? '运行完成' : '运行结束' }}</span>
+                  <span v-if="flowElapsed > 0" class="flow-duration">
+                    耗时 {{ formatDuration(flowElapsed) }}
+                  </span>
+                  <span v-if="flowResult.length > 4000" class="cap-result-note">
+                    仅显示前 4000 字
+                  </span>
+                </div>
+                <pre class="flow-result-body">{{ flowResultText }}</pre>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="flow-runs">
+          <div class="flow-runs-head">
+            <span>最近运行</span>
+            <span class="cap-hint">记录保留最近 20 条，点开可查看步骤状态</span>
+          </div>
+          <div v-if="flowRecentRuns.length === 0" class="flow-tip">还没有运行记录。</div>
+          <button
+            v-for="run in flowRecentRuns"
+            :key="run.id"
+            class="flow-run"
+            :class="{ 'is-active': flowDetailRun?.id === run.id }"
+            @click="openRunDetail(run)"
+          >
+            <span class="flow-run-time">{{ formatSessionTime(run.createdAt) }}</span>
+            <span class="flow-run-state" :class="'is-' + run.status">
+              {{ flowRunStatusText(run.status) }}
+            </span>
+            <span class="flow-run-name">{{ run.name }}</span>
+            <span class="flow-run-brief">{{ flowRunBrief(run) }}</span>
+          </button>
+
+          <div v-if="flowDetailRun" class="flow-run-detail">
+            <div class="flow-run-detail-head">
+              <span class="flow-run-name">{{ flowDetailRun.name }}</span>
+              <span class="flow-run-state" :class="'is-' + flowDetailRun.status">
+                {{ flowRunStatusText(flowDetailRun.status) }}
+              </span>
+              <span v-if="flowDetailRun.endedAt" class="flow-duration">
+                耗时 {{ formatDuration(flowDetailRun.endedAt - flowDetailRun.createdAt) }}
+              </span>
+            </div>
+            <ul class="flow-run-steps">
+              <li
+                v-for="(step, index) in flowDetailRun.steps"
+                :key="step.id"
+                :class="'is-' + step.status"
+              >
+                <span class="flow-step-index">{{ index + 1 }}</span>
+                <span class="flow-step-name" :title="step.label">{{ step.label }}</span>
+                <span class="flow-step-state">{{ flowStatusText(step.status) }}</span>
+              </li>
+            </ul>
+            <pre v-if="flowDetailRun.result" class="flow-run-result">{{ flowDetailRun.result }}</pre>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -3497,6 +3985,485 @@ a.rag-source-title:hover {
   border-color: var(--line-2);
 }
 
+/* ---------------- 工作流 ---------------- */
+
+.flow-panel {
+  width: min(900px, 100%);
+  max-height: 84vh;
+  gap: 12px;
+}
+
+.flow-body {
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.flow-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 52vh;
+  padding-right: 10px;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+}
+
+.flow-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flow-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.flow-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line-2);
+}
+
+.flow-item.is-active {
+  background: var(--accent-soft);
+  border-color: rgba(61, 220, 151, 0.45);
+}
+
+.flow-item.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.flow-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flow-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.flow-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 9.5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 99px;
+}
+
+.flow-desc {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.flow-desc-line {
+  margin: 0;
+}
+
+.flow-tip {
+  padding: 8px 6px;
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+.flow-del {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-3);
+  border-radius: 4px;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.flow-del:hover:not(:disabled) {
+  color: #ff7a7a;
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.flow-del:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.flow-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 52vh;
+  min-height: 0;
+  padding-right: 4px;
+  overflow: auto;
+}
+
+.flow-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.flow-step-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.flow-vars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flow-required {
+  font-style: normal;
+  color: #ff9a9a;
+}
+
+.flow-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-step {
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.16s ease, opacity 0.16s ease;
+}
+
+.flow-step.is-running {
+  border-color: rgba(61, 220, 151, 0.4);
+}
+
+.flow-step.is-failed {
+  border-color: rgba(255, 107, 107, 0.28);
+}
+
+.flow-step.is-skipped {
+  opacity: 0.65;
+}
+
+.flow-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.flow-step-index {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 99px;
+}
+
+.flow-step.is-done .flow-step-index,
+.flow-step.is-running .flow-step-index {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.flow-step.is-failed .flow-step-index {
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.flow-step-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.flow-step-state {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.flow-step.is-done .flow-step-state,
+.flow-step.is-running .flow-step-state {
+  color: var(--accent);
+}
+
+.flow-step.is-failed .flow-step-state {
+  color: #ff9a9a;
+}
+
+.flow-step-caret {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-3);
+  transition: transform 0.16s ease;
+}
+
+.flow-step-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.flow-step-output {
+  max-height: 160px;
+  margin: 0;
+  padding: 0 10px 9px 36px;
+  overflow: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.flow-stop {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.28);
+  border-radius: 8px;
+  transition: background 0.16s ease, opacity 0.16s ease;
+}
+
+.flow-stop:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.2);
+}
+
+.flow-stop:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.flow-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(61, 220, 151, 0.28);
+  border-radius: var(--radius-sm);
+}
+
+.flow-result.is-error {
+  background: rgba(255, 107, 107, 0.07);
+  border-color: rgba(255, 107, 107, 0.22);
+}
+
+.flow-result .cap-result-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.flow-result.is-error .cap-result-state {
+  color: #ff9a9a;
+}
+
+.flow-duration {
+  flex: 1;
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.flow-result-body {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.flow-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.flow-runs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.flow-runs-head .cap-hint {
+  margin-left: auto;
+}
+
+.flow-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.flow-run:hover,
+.flow-run.is-active {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line-2);
+}
+
+.flow-run-time {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.flow-run-state {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 9.5px;
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 99px;
+}
+
+.flow-run-state.is-done {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.flow-run-state.is-failed {
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.flow-run-state.is-aborted {
+  color: #ffc98a;
+  background: rgba(255, 169, 77, 0.14);
+}
+
+.flow-run-name {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.flow-run-brief {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.flow-run-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.flow-run-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-run-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  font-size: 11px;
+}
+
+.flow-run-steps li.is-done .flow-step-index {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.flow-run-steps li.is-failed .flow-step-index {
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.flow-run-steps li.is-done .flow-step-state {
+  color: var(--accent);
+}
+
+.flow-run-steps li.is-failed .flow-step-state {
+  color: #ff9a9a;
+}
+
+.flow-run-result {
+  max-height: 140px;
+  margin: 0;
+  overflow: auto;
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ---------------- 窄窗口 ---------------- */
 
 @media (max-width: 1180px) {
@@ -3518,6 +4485,17 @@ a.rag-source-title:hover {
 
   .rail {
     display: none;
+  }
+
+  .flow-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .flow-side {
+    max-height: 26vh;
+    padding-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 }
 </style>

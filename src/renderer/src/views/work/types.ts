@@ -4,6 +4,7 @@
 import type { RagQuery, RagResult } from '../../../../main/work/rag/types'
 import type { KbDocument } from '../../../../main/work/kb/types'
 import type { WorkPreferences } from '../../../../main/work/config'
+import type { WorkflowDefinition, WorkflowRun } from '../../../../main/work/workflow/types'
 
 export type {
   RagChunk,
@@ -16,6 +17,15 @@ export type {
 export type { KbChunk, KbDocument, KbIndex } from '../../../../main/work/kb/types'
 
 export type { WorkPreferences }
+
+export type {
+  RunStep,
+  RunStepStatus,
+  WorkflowDefinition,
+  WorkflowRun,
+  WorkflowStep,
+  WorkflowVariable
+} from '../../../../main/work/workflow/types'
 
 export type WorkRole = 'user' | 'assistant'
 export type WorkToolStatus = 'running' | 'done' | 'failed'
@@ -159,6 +169,55 @@ export interface WorkKbRemoveResult {
   message?: string
 }
 
+// ---------------- 工作流编排 ----------------
+
+/** 工作流列表结果 */
+export interface WorkFlowListResult {
+  ok: boolean
+  workflows: WorkflowDefinition[]
+  message?: string
+}
+
+export interface WorkFlowSaveResult {
+  ok: boolean
+  workflow?: WorkflowDefinition
+  message?: string
+}
+
+export interface WorkFlowRemoveResult {
+  ok: boolean
+  message?: string
+}
+
+export interface WorkFlowRunResult {
+  ok: boolean
+  runId?: string
+  message?: string
+}
+
+export interface WorkFlowRunsResult {
+  ok: boolean
+  runs: WorkflowRun[]
+  message?: string
+}
+
+/** 主进程推送的单步状态事件 */
+export interface WorkFlowStepEvent {
+  runId: string
+  stepId: string
+  status: WorkflowRun['steps'][number]['status']
+  output?: string
+  message?: string
+}
+
+/** 主进程推送的运行结束事件 */
+export interface WorkFlowDoneEvent {
+  runId: string
+  ok: boolean
+  result?: string
+  message?: string
+}
+
 /** 预加载脚本暴露到 window.workApi 的接口 */
 export interface WorkApi {
   chatStart(payload: WorkChatStartPayload): Promise<{ ok: boolean; message?: string }>
@@ -182,4 +241,16 @@ export interface WorkApi {
   kbRemove(docId: string): Promise<WorkKbRemoveResult>
   prefsGet(): Promise<WorkPreferencesResult>
   prefsSet(patch: Partial<WorkPreferences>): Promise<WorkPreferencesResult>
+  flowList(): Promise<WorkFlowListResult>
+  flowSave(workflow: WorkflowDefinition): Promise<WorkFlowSaveResult>
+  flowRemove(id: string): Promise<WorkFlowRemoveResult>
+  flowRun(payload: {
+    workflowId: string
+    variables: Record<string, string>
+    runId: string
+  }): Promise<WorkFlowRunResult>
+  flowAbort(runId: string): Promise<void>
+  flowRuns(): Promise<WorkFlowRunsResult>
+  onFlowStep(cb: (payload: WorkFlowStepEvent) => void): () => void
+  onFlowDone(cb: (payload: WorkFlowDoneEvent) => void): () => void
 }
