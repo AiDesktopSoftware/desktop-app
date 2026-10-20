@@ -1,2 +1,8 @@
 # 开发日记仅保存在本地工作目录，不进 Git
 开发日记.md
+
+# 依赖与构建产物
+node_modules/
+out/
+dist/
+*.local
