@@ -7,6 +7,9 @@ import type {
   WorkCapabilityId,
   WorkCapabilityRunResult,
   WorkChatStartPayload,
+  WorkKbImportResult,
+  WorkKbListResult,
+  WorkKbRemoveResult,
   WorkSession,
   WorkSettingsStatus
 } from '../renderer/src/views/work/types'
@@ -50,7 +53,12 @@ const workApi: WorkApi = {
   runCapability: (id: WorkCapabilityId, args: Record<string, unknown>) =>
     ipcRenderer.invoke('work:cap:run', { id, args }) as Promise<WorkCapabilityRunResult>,
   searchRag: (query: RagQuery) =>
-    ipcRenderer.invoke('work:rag:search', query) as Promise<RagResult>
+    ipcRenderer.invoke('work:rag:search', query) as Promise<RagResult>,
+  kbList: () => ipcRenderer.invoke('work:kb:list') as Promise<WorkKbListResult>,
+  kbImport: (paths?: string[]) =>
+    ipcRenderer.invoke('work:kb:import', { paths }) as Promise<WorkKbImportResult>,
+  kbRemove: (docId: string) =>
+    ipcRenderer.invoke('work:kb:remove', { docId }) as Promise<WorkKbRemoveResult>
 }
 
 if (process.contextIsolated) {

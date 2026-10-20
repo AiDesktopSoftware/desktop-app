@@ -1,13 +1,20 @@
-import { ipcMain, type WebContents } from 'electron'
+import { dialog, ipcMain, type WebContents } from 'electron'
 import { runAgent } from './agent'
 import { capabilityMetadata, getCapability } from './capabilities'
 import { getConfig, isConfigured, maskApiKey } from './config'
+import { importFiles, removeDocument } from './kb/ingest'
+import { loadIndex } from './kb/store'
 import { chatOnce, LlmError, streamChat, type LlmMessage } from './llm'
 import { loadSessions, saveSessions } from './store'
 import { executeTool } from './tools'
 import { searchRag } from './rag/provider'
 import type { RagQuery } from './rag/types'
-import type { WorkSettingsStatus } from '../../renderer/src/views/work/types'
+import type {
+  WorkKbImportResult,
+  WorkKbListResult,
+  WorkKbRemoveResult,
+  WorkSettingsStatus
+} from '../../renderer/src/views/work/types'
 
 interface ChatStartPayload {
   requestId?: unknown
@@ -41,6 +48,14 @@ function safeSend(sender: WebContents, channel: string, payload: unknown): void 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
 }
+
+/** 把异常压成一句可读中文原因，避免把整段堆栈回传给界面 */
+function errorDetail(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error)
+  return detail.slice(0, 160)
+}
+
+const KB_EXTENSIONS = ['txt', 'md', 'markdown', 'html', 'htm', 'json', 'csv', 'log']
 
 /**
  * 注册工作模式相关 IPC，多次创建窗口时只注册一次。
@@ -156,8 +171,97 @@ export function registerWorkIpc(): void {
   // 能力元数据：只下发界面需要的字段，不包含执行函数与 JSON Schema
   ipcMain.handle('work:cap:list', () => capabilityMetadata())
 
-  // 知识库检索：P0 只跑通统一契约，真实通道由 provider 内部决定是否可用
+  // 知识库检索：本地通道走真实索引，云端通道尚未接入
   ipcMain.handle('work:rag:search', (_event, payload: RagQuery) => searchRag(payload))
+
+  // ---------------- 本地知识库 ----------------
+
+  ipcMain.handle('work:kb:list', async (): Promise<WorkKbListResult> => {
+    try {
+      const index = await loadIndex()
+      return { ok: true, documents: index.documents, chunkCount: index.chunks.length }
+    } catch (error) {
+      return {
+        ok: false,
+        documents: [],
+        chunkCount: 0,
+        message: `读取本地知识库失败：${errorDetail(error)}`
+      }
+    }
+  })
+
+  ipcMain.handle(
+    'work:kb:import',
+    async (_event, payload: { paths?: unknown }): Promise<WorkKbImportResult> => {
+      try {
+        let paths: string[] = []
+        if (Array.isArray(payload?.paths)) {
+          paths = payload.paths.filter(
+            (item): item is string => typeof item === 'string' && item.trim().length > 0
+          )
+        }
+
+        // 未指定路径时弹系统文件选择框，支持多选
+        if (paths.length === 0) {
+          const picked = await dialog.showOpenDialog({
+            title: '导入到知识库',
+            properties: ['openFile', 'multiSelections'],
+            filters: [{ name: '文本资料', extensions: KB_EXTENSIONS }]
+          })
+          if (picked.canceled || picked.filePaths.length === 0) {
+            return { ok: true, canceled: true, added: [], skipped: [] }
+          }
+          paths = picked.filePaths
+        }
+
+        const result = await importFiles(paths)
+        return { ok: true, canceled: false, ...result }
+      } catch (error) {
+        return {
+          ok: false,
+          canceled: false,
+          added: [],
+          skipped: [],
+          message: `导入失败：${errorDetail(error)}`
+        }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'work:kb:remove',
+    async (_event, payload: { docId?: unknown }): Promise<WorkKbRemoveResult> => {
+      try {
+        const docId = typeof payload?.docId === 'string' ? payload.docId : ''
+        if (!docId) return { ok: false, message: '缺少文档标识，无法删除' }
+        const removed = await removeDocument(docId)
+        return removed
+          ? { ok: true }
+          : { ok: false, message: '未找到该文档，可能已被删除' }
+      } catch (error) {
+        return { ok: false, message: `删除失败：${errorDetail(error)}` }
+      }
+    }
+  )
+
+  // 供界面单独检索本地库：复用统一检索入口，保证结构与 work:rag:search 一致
+  ipcMain.handle('work:kb:search', async (_event, payload: { query?: unknown; topK?: unknown }) => {
+    try {
+      const query = typeof payload?.query === 'string' ? payload.query : ''
+      const topK =
+        typeof payload?.topK === 'number' && Number.isFinite(payload.topK)
+          ? payload.topK
+          : 5
+      return await searchRag({ query, provider: 'local', topK })
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'local',
+        chunks: [],
+        message: `检索失败：${errorDetail(error)}`
+      }
+    }
+  })
 
   /**
    * 界面直接执行能力，与 Agent 工具调用共用 executeTool。

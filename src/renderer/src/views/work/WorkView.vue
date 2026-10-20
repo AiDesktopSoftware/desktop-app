@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type {
+  KbDocument,
   RagChunk,
   RagProviderId,
   RagResult,
@@ -61,6 +62,13 @@ const ragLoading = ref(false)
 const ragResult = ref<RagResult | null>(null)
 const ragError = ref('')
 let ragRequestToken = 0
+
+// 本地知识库：资料列表与导入/删除状态，只保留在当前视图，不写入会话
+const kbDocuments = ref<KbDocument[]>([])
+const kbChunkCount = ref(0)
+const kbImporting = ref(false)
+const kbError = ref('')
+const kbNotice = ref('')
 
 const draft = ref('')
 const busy = ref(false)
@@ -158,8 +166,72 @@ function evidenceDomain(url: string): string {
 
 function ragOrigin(chunk: RagChunk): string {
   if (chunk.source.url) return evidenceDomain(chunk.source.url)
-  if (chunk.source.path) return chunk.source.path
+  if (chunk.source.path) return fileName(chunk.source.path)
   return '来源未标注'
+}
+
+/** 从完整路径中取文件名，用于窄栏里的来源展示 */
+function fileName(path: string): string {
+  const parts = path.split(/[\\/]/).filter((part) => part.length > 0)
+  return parts.length > 0 ? parts[parts.length - 1] : path
+}
+
+/** 刷新本地知识库列表；失败时只在区块内提示，不影响对话 */
+async function refreshKb(): Promise<void> {
+  try {
+    const result = await api.kbList()
+    if (!result.ok) {
+      kbError.value = result.message || '读取本地知识库失败'
+      return
+    }
+    kbDocuments.value = Array.isArray(result.documents) ? result.documents : []
+    kbChunkCount.value = result.chunkCount
+  } catch (error) {
+    kbError.value = error instanceof Error ? error.message : '读取本地知识库失败'
+  }
+}
+
+async function importKb(): Promise<void> {
+  if (kbImporting.value) return
+  kbImporting.value = true
+  kbError.value = ''
+  kbNotice.value = ''
+  try {
+    const result = await api.kbImport()
+    if (!result.ok) {
+      kbError.value = result.message || '导入失败'
+      return
+    }
+    if (result.canceled) return
+    await refreshKb()
+
+    const skipped = Array.isArray(result.skipped) ? result.skipped : []
+    let notice = `新增 ${result.added.length} 篇`
+    if (skipped.length > 0) {
+      const first = skipped[0]
+      const name = fileName(first.path) || '未知文件'
+      notice += `，跳过 ${skipped.length} 篇：${name}（${first.reason}）`
+    }
+    kbNotice.value = notice
+  } catch (error) {
+    kbError.value = error instanceof Error ? error.message : '导入失败'
+  } finally {
+    kbImporting.value = false
+  }
+}
+
+/** 点击即删除，不弹确认；删除后刷新列表 */
+async function removeKb(docId: string): Promise<void> {
+  if (!docId) return
+  kbError.value = ''
+  kbNotice.value = ''
+  try {
+    const result = await api.kbRemove(docId)
+    if (!result.ok) kbError.value = result.message || '删除失败'
+  } catch (error) {
+    kbError.value = error instanceof Error ? error.message : '删除失败'
+  }
+  await refreshKb()
 }
 
 /** 切换会话或新建会话时清空检索视图，并让仍在途的请求失效 */
@@ -847,6 +919,7 @@ onMounted(async () => {
   } catch (error) {
     settingsError.value = error instanceof Error ? error.message : '读取配置失败'
   }
+  void refreshKb()
   scrollToBottom()
 })
 
@@ -1091,6 +1164,33 @@ onBeforeUnmount(() => {
 
       <div class="insp-scroll">
         <template v-if="tab === 'evidence'">
+          <div class="insp-block kb-block">
+            <div class="insp-head kb-head">
+              <h4>本地知识库</h4>
+              <span class="note">{{ kbDocuments.length }} 篇 · {{ kbChunkCount }} 片段</span>
+              <button class="kb-import" :disabled="kbImporting" @click="importKb">
+                {{ kbImporting ? '导入中…' : '导入文件' }}
+              </button>
+            </div>
+
+            <div v-if="kbError" class="rag-error">{{ kbError }}</div>
+            <div v-if="kbNotice" class="kb-notice">{{ kbNotice }}</div>
+
+            <ul v-if="kbDocuments.length" class="kb-list">
+              <li v-for="doc in kbDocuments" :key="doc.id" class="kb-item">
+                <div class="kb-line">
+                  <span class="kb-title" :title="doc.title">{{ doc.title }}</span>
+                  <button class="kb-del" title="删除该资料" @click="removeKb(doc.id)">×</button>
+                </div>
+                <div class="kb-line kb-sub">
+                  <span class="kb-count">{{ doc.chunkCount }} 片段</span>
+                  <span class="kb-file" :title="doc.path">{{ fileName(doc.path) }}</span>
+                </div>
+              </li>
+            </ul>
+            <div v-else class="kb-empty">尚未导入资料，支持 txt / md / html / json / csv</div>
+          </div>
+
           <div class="insp-block rag-block">
             <div class="insp-head">
               <h4>知识库检索</h4>
@@ -2219,7 +2319,137 @@ onBeforeUnmount(() => {
   color: var(--text-3);
 }
 
-/* ---------------- 知识库检索（P0 演示通道） ---------------- */
+/* ---------------- 本地知识库 ---------------- */
+
+.kb-head {
+  align-items: center;
+}
+
+.kb-head .note {
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.kb-import {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.kb-import:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--line-2);
+}
+
+.kb-import:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.kb-notice {
+  margin-bottom: 7px;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  background: var(--accent-soft);
+  border: 1px solid rgba(61, 220, 151, 0.24);
+  border-radius: var(--radius-sm);
+  word-break: break-word;
+}
+
+.kb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+}
+
+.kb-item {
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  transition: border-color 0.16s ease;
+}
+
+.kb-item:hover {
+  border-color: var(--line-2);
+}
+
+.kb-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kb-sub {
+  margin-top: 3px;
+}
+
+.kb-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kb-count {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.kb-file {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 9.5px;
+  color: var(--text-3);
+  text-align: right;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kb-del {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-3);
+  border-radius: 4px;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.kb-del:hover {
+  color: #ff8b8b;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.kb-empty {
+  padding: 12px 10px;
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+  text-align: center;
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+}
+
+/* ---------------- 知识库检索 ---------------- */
 
 .rag-form {
   display: grid;

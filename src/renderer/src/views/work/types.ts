@@ -2,6 +2,7 @@
 // 主进程、预加载和渲染层都通过 type-only import 复用，避免类型漂移
 
 import type { RagQuery, RagResult } from '../../../../main/work/rag/types'
+import type { KbDocument } from '../../../../main/work/kb/types'
 
 export type {
   RagChunk,
@@ -10,6 +11,8 @@ export type {
   RagResult,
   RagSource
 } from '../../../../main/work/rag/types'
+
+export type { KbChunk, KbDocument, KbIndex } from '../../../../main/work/kb/types'
 
 export type WorkRole = 'user' | 'assistant'
 export type WorkToolStatus = 'running' | 'done' | 'failed'
@@ -122,6 +125,28 @@ export interface WorkSettingsStatus {
   keyHint?: string
 }
 
+/** 本地知识库列表：文档元数据 + 片段总数 */
+export interface WorkKbListResult {
+  ok: boolean
+  documents: KbDocument[]
+  chunkCount: number
+  message?: string
+}
+
+/** 本地知识库导入结果：取消时 canceled 为 true，其余字段为空 */
+export interface WorkKbImportResult {
+  ok: boolean
+  canceled?: boolean
+  added: KbDocument[]
+  skipped: { path: string; reason: string }[]
+  message?: string
+}
+
+export interface WorkKbRemoveResult {
+  ok: boolean
+  message?: string
+}
+
 /** 预加载脚本暴露到 window.workApi 的接口 */
 export interface WorkApi {
   chatStart(payload: WorkChatStartPayload): Promise<{ ok: boolean; message?: string }>
@@ -140,4 +165,7 @@ export interface WorkApi {
     args: Record<string, unknown>
   ): Promise<WorkCapabilityRunResult>
   searchRag(query: RagQuery): Promise<RagResult>
+  kbList(): Promise<WorkKbListResult>
+  kbImport(paths?: string[]): Promise<WorkKbImportResult>
+  kbRemove(docId: string): Promise<WorkKbRemoveResult>
 }
