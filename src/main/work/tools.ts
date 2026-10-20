@@ -1,9 +1,9 @@
 import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import type { LlmToolSchema } from './llm'
-import { capabilitySchemas } from './capabilities'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { searchKb } from './kb/search'
+import { loadIndex } from './kb/store'
 
 /** 工具统一返回结构：任何异常都转成 ok:false 的可读中文原因 */
 export interface ToolResult {
@@ -23,6 +23,8 @@ const LIST_MAX_ITEMS = 200
 const READ_MAX_BYTES = 200 * 1024
 const COMMAND_TIMEOUT_MS = 60_000
 const COMMAND_MAX_CHARS = 6000
+const DEFAULT_KB_TOP_K = 5
+const MAX_KB_TOP_K = 10
 
 // 明显破坏性的命令直接拒绝，宁可误拦也不执行
 const DESTRUCTIVE_PATTERNS: RegExp[] = [
@@ -39,9 +41,6 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
   /\bbcdedit\b/i,
   /\bnet\s+user\b/i
 ]
-
-/** 6 个工具的 OpenAI function calling 定义，统一来自能力注册表 */
-export const TOOL_SCHEMAS: LlmToolSchema[] = capabilitySchemas()
 
 function projectRoot(): string {
   return resolve(app.getAppPath())
@@ -531,6 +530,31 @@ async function runCommand(
   })
 }
 
+/** 本地知识库检索：空库与无命中都是正常结果，不抛异常 */
+async function kbSearch(args: Record<string, unknown>): Promise<ToolResult> {
+  const query = typeof args.query === 'string' ? args.query.trim() : ''
+  if (!query) return { ok: false, content: '检索问题不能为空' }
+
+  const index = await loadIndex()
+  if (index.chunks.length === 0) {
+    return { ok: true, content: '本地知识库为空，请先导入资料。' }
+  }
+
+  const rawTopK = typeof args.topK === 'number' ? Math.floor(args.topK) : DEFAULT_KB_TOP_K
+  const topK = Math.min(Math.max(rawTopK || DEFAULT_KB_TOP_K, 1), MAX_KB_TOP_K)
+  const hits = await searchKb(query, topK)
+  if (hits.length === 0) {
+    return { ok: true, content: '本地知识库没有匹配片段。' }
+  }
+
+  // 固定格式，Agent 侧靠这段文本解析出文件名与段号
+  const blocks = hits.map((hit, position) => {
+    const name = basename(hit.document.path)
+    return `[${position + 1}] ${name} · 第${hit.chunk.index}段（相关度 ${hit.score.toFixed(2)}）\n${hit.chunk.text.trim()}`
+  })
+  return { ok: true, content: blocks.join('\n\n') }
+}
+
 /**
  * 执行指定工具，永不抛出异常。
  * args 由模型给出的 JSON 解析而来，缺字段时由各工具自行返回可读错误。
@@ -554,6 +578,8 @@ export async function executeTool(
         return await writeFileTool(args)
       case 'run_command':
         return await runCommand(args, signal)
+      case 'kb_search':
+        return await kbSearch(args)
       default:
         return { ok: false, content: `未知工具：${name || '(空)'}` }
     }

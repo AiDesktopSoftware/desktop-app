@@ -1,10 +1,14 @@
+import { basename } from 'node:path'
 import {
   chatWithTools,
   type LlmAgentMessage,
   type LlmMessage,
   type LlmToolCall
 } from './llm'
-import { executeTool, TOOL_SCHEMAS } from './tools'
+import { capabilitySchemas } from './capabilities'
+import { getPreferences } from './config'
+import { loadIndex } from './kb/store'
+import { executeTool } from './tools'
 
 const MAX_ROUNDS = 10
 const MAX_TOOLS = 14
@@ -15,14 +19,15 @@ const TOOL_RESULT_LIMIT = 8000
 
 const AGENT_SYSTEM = [
   '你是一名严谨的中文研究助手，可以调用工具完成任务。工作原则：',
-  '1. 需要最新信息、时事、具体数据或不确定的事实时，使用 web_search 检索；只挑最有价值的 2 到 3 条链接用 fetch_url 阅读原文。',
-  '2. 结论中标注来源 URL；不许编造来源、链接、数据或引用。',
-  '3. 需要引用本地资料时使用 read_file，需要查看目录时使用 list_files。',
-  '4. 需要计算、整理数据或检查本机环境时，可以使用 run_command。',
-  '5. 需要输出报告或保存结果时，使用 write_file。',
-  '6. 信息不足或工具失败时明确说明，不要臆测。',
-  '7. 工具调用要节制：整体不超过 6 次调用，同一条链接不要重复抓取；拿到足够信息就立即给出结论。',
-  '8. 回答使用中文，结构清晰；最终回答只呈现结论与来源，不要罗列工具调用过程。'
+  '1. 涉及用户本地资料、课程文档、已导入文件的问题，先调用 kb_search 检索；引用本地内容时写成（来源：文件名 · 第N段）。本地库无结果时再用 web_search。',
+  '2. 需要最新信息、时事、具体数据或不确定的事实时，使用 web_search 检索；只挑最有价值的 2 到 3 条链接用 fetch_url 阅读原文。',
+  '3. 结论中标注来源 URL；引用本地资料时标注（来源：文件名 · 第N段）；不许编造来源、链接、数据或引用。',
+  '4. 需要查看目录时使用 list_files，需要读取具体文件时使用 read_file。',
+  '5. 需要计算、整理数据或检查本机环境时，可以使用 run_command。',
+  '6. 需要输出报告或保存结果时，使用 write_file。',
+  '7. 信息不足或工具失败时明确说明，不要臆测。',
+  '8. 工具调用要节制：整体不超过 6 次调用，同一条链接不要重复抓取；拿到足够信息就立即给出结论。',
+  '9. 回答使用中文，结构清晰；最终回答只呈现结论与来源，不要罗列工具调用过程。'
 ].join('\n')
 
 export type AgentSend = (channel: string, payload: unknown) => void
@@ -45,9 +50,11 @@ interface ToolEventPayload {
   output?: string
 }
 
+/** 证据来源：联网来源带 url，本地资料带 path，至少有一个 */
 interface EvidenceItem {
   title: string
-  url: string
+  url?: string
+  path?: string
 }
 
 /**
@@ -66,7 +73,46 @@ function parseEvidence(name: string, content: string): EvidenceItem[] {
     const matched = content.match(/标题[:：]\s*([^\n]*)\n\s*URL[:：]\s*(\S+)/)
     if (matched) items.push({ title: matched[1].trim(), url: matched[2].trim() })
   }
-  return items.filter((item) => /^https?:\/\//i.test(item.url))
+  return items.filter((item) => item.url && /^https?:\/\//i.test(item.url))
+}
+
+/**
+ * 从 kb_search 的固定返回格式中解析来源：
+ * 形如 "[1] 文件名.md · 第2段（相关度 0.83）"，文件名与索引中的绝对路径对应后补上 path。
+ */
+async function parseKbEvidence(content: string): Promise<EvidenceItem[]> {
+  const pattern = /^\[\d+\]\s*(.+?)\s*·\s*第(\d+)段(?:（相关度\s*[\d.]+）)?\s*$/gm
+  const found: { title: string; file: string }[] = []
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(content)) !== null) {
+    const file = match[1].trim()
+    if (!file) continue
+    found.push({ title: `${file} · 第${match[2]}段`, file })
+  }
+  if (found.length === 0) return []
+
+  const pathMap = new Map<string, string>()
+  try {
+    const index = await loadIndex()
+    for (const document of index.documents) {
+      const name = basename(document.path)
+      if (!pathMap.has(name)) pathMap.set(name, document.path)
+    }
+  } catch {
+    // 索引读取失败时只保留标题，不阻断回答
+  }
+
+  const items: EvidenceItem[] = []
+  for (const { title, file } of found) {
+    const path = pathMap.get(file)
+    if (path) items.push({ title, path })
+  }
+  return items
+}
+
+/** 证据去重键：联网来源按 url，本地来源按 path */
+function evidenceKey(item: EvidenceItem): string {
+  return item.url || item.path || ''
 }
 
 function sleep(ms: number): Promise<void> {
@@ -107,7 +153,8 @@ async function emitText(
  */
 async function forceFinalAnswer(
   conversation: LlmAgentMessage[],
-  options: AgentRunOptions
+  options: AgentRunOptions,
+  temperature: number
 ): Promise<string> {
   try {
     const result = await chatWithTools({
@@ -119,7 +166,7 @@ async function forceFinalAnswer(
         }
       ],
       model: options.model,
-      temperature: options.temperature ?? 0.3,
+      temperature,
       signal: options.signal
     })
     return result.content.trim()
@@ -134,6 +181,13 @@ async function forceFinalAnswer(
  */
 export async function runAgent(options: AgentRunOptions): Promise<void> {
   const { requestId, send, signal } = options
+  // 偏好设置每次请求重新读取，改完设置后无需重启应用
+  const preferences = getPreferences()
+  const temperature = options.temperature ?? preferences.temperature
+  const extraPrompt = preferences.extraSystemPrompt.trim()
+  const systemPrompt = extraPrompt ? `${AGENT_SYSTEM}\n\n${extraPrompt}` : AGENT_SYSTEM
+  const toolSchemas = capabilitySchemas(preferences.enabledTools)
+
   const history: LlmAgentMessage[] = options.messages
     .filter((message) => message.content.trim().length > 0)
     .map((message) =>
@@ -144,7 +198,7 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
           : { role: 'assistant', content: message.content }
     )
   const conversation: LlmAgentMessage[] = [
-    { role: 'system', content: AGENT_SYSTEM },
+    { role: 'system', content: systemPrompt },
     ...history
   ]
 
@@ -164,10 +218,10 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
 
       const result = await chatWithTools({
         messages: conversation,
-        tools: TOOL_SCHEMAS,
+        tools: toolSchemas,
         toolChoice: 'auto',
         model: options.model,
-        temperature: options.temperature ?? 0.3,
+        temperature,
         signal
       })
       lastContent = result.content.trim()
@@ -246,13 +300,16 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
         }
         send('work:agent:tool', finished)
 
-        // 联网类工具成功后自动汇总来源，同一请求内按 url 去重
-        if (outcome.ok && (name === 'web_search' || name === 'fetch_url')) {
-          const fresh = parseEvidence(name, outcome.content).filter(
-            (item) => !seenEvidence.has(item.url)
-          )
+        // 联网与本地检索成功后自动汇总来源，同一请求内按 url 或 path 去重
+        if (outcome.ok && (name === 'web_search' || name === 'fetch_url' || name === 'kb_search')) {
+          const parsed =
+            name === 'kb_search' ? await parseKbEvidence(outcome.content) : parseEvidence(name, outcome.content)
+          const fresh = parsed.filter((item) => {
+            const key = evidenceKey(item)
+            return key.length > 0 && !seenEvidence.has(key)
+          })
           if (fresh.length > 0) {
-            for (const item of fresh) seenEvidence.add(item.url)
+            for (const item of fresh) seenEvidence.add(evidenceKey(item))
             send('work:agent:evidence', { requestId, items: fresh })
           }
         }
@@ -267,7 +324,7 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
 
     if (exhausted) {
       // 轮次用尽：强制模型不再调用工具，直接基于已有信息收尾
-      finalContent = await forceFinalAnswer(conversation, options)
+      finalContent = await forceFinalAnswer(conversation, options, temperature)
       if (!finalContent.trim()) finalContent = lastContent || '信息收集已到上限，请补充更具体的问题再试。'
     }
     if (!finalContent.trim()) finalContent = '模型未返回内容，请稍后重试。'

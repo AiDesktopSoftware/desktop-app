@@ -1,7 +1,7 @@
 import { dialog, ipcMain, type WebContents } from 'electron'
 import { runAgent } from './agent'
 import { capabilityMetadata, getCapability } from './capabilities'
-import { getConfig, isConfigured, maskApiKey } from './config'
+import { getConfig, getPreferences, isConfigured, maskApiKey, savePreferences } from './config'
 import { importFiles, removeDocument } from './kb/ingest'
 import { loadIndex } from './kb/store'
 import { chatOnce, LlmError, streamChat, type LlmMessage } from './llm'
@@ -13,6 +13,8 @@ import type {
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
+  WorkPreferences,
+  WorkPreferencesResult,
   WorkSettingsStatus
 } from '../../renderer/src/views/work/types'
 
@@ -167,6 +169,32 @@ export function registerWorkIpc(): void {
     await saveSessions(sessions)
     return { ok: true }
   })
+
+  // ---------------- 偏好设置 ----------------
+
+  ipcMain.handle('work:prefs:get', (): WorkPreferencesResult => {
+    try {
+      return { ok: true, preferences: getPreferences() }
+    } catch (error) {
+      return { ok: false, message: `读取偏好设置失败：${errorDetail(error)}` }
+    }
+  })
+
+  ipcMain.handle(
+    'work:prefs:set',
+    async (_event, payload: { patch?: unknown }): Promise<WorkPreferencesResult> => {
+      try {
+        const patch =
+          payload?.patch && typeof payload.patch === 'object' && !Array.isArray(payload.patch)
+            ? (payload.patch as Partial<WorkPreferences>)
+            : {}
+        const preferences = await savePreferences(patch)
+        return { ok: true, preferences }
+      } catch (error) {
+        return { ok: false, message: `保存偏好设置失败：${errorDetail(error)}` }
+      }
+    }
+  )
 
   // 能力元数据：只下发界面需要的字段，不包含执行函数与 JSON Schema
   ipcMain.handle('work:cap:list', () => capabilityMetadata())

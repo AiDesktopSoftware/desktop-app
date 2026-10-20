@@ -3,6 +3,7 @@
 
 import type { RagQuery, RagResult } from '../../../../main/work/rag/types'
 import type { KbDocument } from '../../../../main/work/kb/types'
+import type { WorkPreferences } from '../../../../main/work/config'
 
 export type {
   RagChunk,
@@ -14,16 +15,19 @@ export type {
 
 export type { KbChunk, KbDocument, KbIndex } from '../../../../main/work/kb/types'
 
+export type { WorkPreferences }
+
 export type WorkRole = 'user' | 'assistant'
 export type WorkToolStatus = 'running' | 'done' | 'failed'
 
-/** 与主进程能力注册表一致的 6 个能力 id */
+/** 与主进程能力注册表一致的 7 个能力 id */
 export type WorkCapabilityId =
   | 'web_search'
   | 'fetch_url'
   | 'list_files'
   | 'read_file'
   | 'write_file'
+  | 'kb_search'
   | 'run_command'
 
 export type WorkCapabilityPermission = 'read' | 'write' | 'exec'
@@ -60,10 +64,11 @@ export interface WorkToolCall {
   output?: string
 }
 
-/** 证据链中的一条来源 */
+/** 证据链中的一条来源：联网来源带 url，本地资料带 path，至少有一个 */
 export interface WorkEvidenceItem {
   title: string
-  url: string
+  url?: string
+  path?: string
 }
 
 export interface WorkMessage {
@@ -73,7 +78,7 @@ export interface WorkMessage {
   createdAt: number
   /** 助手消息的执行轨迹（工具调用） */
   tools?: WorkToolCall[]
-  /** 该轮回答自动汇总的检索来源，按 url 去重 */
+  /** 该轮回答自动汇总的检索来源，按 url 或 path 去重 */
   evidence?: WorkEvidenceItem[]
   /** 仅运行时使用，持久化时剔除 */
   streaming?: boolean
@@ -112,10 +117,17 @@ export interface WorkToolEvent {
   output?: string
 }
 
-/** 主进程推送的证据链增量（同一请求内已按 url 去重） */
+/** 主进程推送的证据链增量（同一请求内已按 url 或 path 去重） */
 export interface WorkEvidenceEvent {
   requestId: string
   items: WorkEvidenceItem[]
+}
+
+/** 偏好设置读写结果，失败时只返回中文原因 */
+export interface WorkPreferencesResult {
+  ok: boolean
+  preferences?: WorkPreferences
+  message?: string
 }
 
 export interface WorkSettingsStatus {
@@ -168,4 +180,6 @@ export interface WorkApi {
   kbList(): Promise<WorkKbListResult>
   kbImport(paths?: string[]): Promise<WorkKbImportResult>
   kbRemove(docId: string): Promise<WorkKbRemoveResult>
+  prefsGet(): Promise<WorkPreferencesResult>
+  prefsSet(patch: Partial<WorkPreferences>): Promise<WorkPreferencesResult>
 }

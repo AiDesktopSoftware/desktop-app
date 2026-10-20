@@ -101,6 +101,25 @@ export const CAPABILITIES: Capability[] = [
     }
   },
   {
+    id: 'kb_search',
+    label: '本地知识库检索',
+    description: '在用户导入的本地资料中检索片段，适合回答依赖已有文档的问题。',
+    permission: 'read',
+    agentEnabled: true,
+    fields: [
+      { key: 'query', label: '检索问题', placeholder: '例如：课程设计的验证方法', multiline: true },
+      { key: 'topK', label: '返回片段数', placeholder: '可选，默认 5，最多 10' }
+    ],
+    paramsSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '检索问题或关键词' },
+        topK: { type: 'number', description: '返回片段数，1–10，默认 5' }
+      },
+      required: ['query']
+    }
+  },
+  {
     id: 'run_command',
     label: '执行命令',
     description: '在本机执行 PowerShell 命令，默认在项目根目录运行，60 秒超时。',
@@ -125,9 +144,16 @@ export function getCapability(id: string): Capability | undefined {
   return CAPABILITIES.find((capability) => capability.id === id)
 }
 
-/** 交给 Agent 的工具定义，只包含 agentEnabled 的能力 */
-export function capabilitySchemas(): LlmToolSchema[] {
-  return CAPABILITIES.filter((capability) => capability.agentEnabled).map((capability) => ({
+/**
+ * 交给 Agent 的工具定义，只包含 agentEnabled 的能力。
+ * enabledTools 非空时进一步限定为用户允许使用的子集，空数组表示全部放开。
+ */
+export function capabilitySchemas(enabledTools?: string[]): LlmToolSchema[] {
+  const allowed =
+    enabledTools && enabledTools.length > 0 ? new Set(enabledTools) : null
+  return CAPABILITIES.filter(
+    (capability) => capability.agentEnabled && (!allowed || allowed.has(capability.id))
+  ).map((capability) => ({
     type: 'function',
     function: {
       name: capability.id,

@@ -10,6 +10,8 @@ import type {
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
+  WorkPreferences,
+  WorkPreferencesResult,
   WorkSession,
   WorkSettingsStatus
 } from '../renderer/src/views/work/types'
@@ -58,7 +60,11 @@ const workApi: WorkApi = {
   kbImport: (paths?: string[]) =>
     ipcRenderer.invoke('work:kb:import', { paths }) as Promise<WorkKbImportResult>,
   kbRemove: (docId: string) =>
-    ipcRenderer.invoke('work:kb:remove', { docId }) as Promise<WorkKbRemoveResult>
+    ipcRenderer.invoke('work:kb:remove', { docId }) as Promise<WorkKbRemoveResult>,
+  prefsGet: () =>
+    ipcRenderer.invoke('work:prefs:get') as Promise<WorkPreferencesResult>,
+  prefsSet: (patch: Partial<WorkPreferences>) =>
+    ipcRenderer.invoke('work:prefs:set', { patch }) as Promise<WorkPreferencesResult>
 }
 
 if (process.contextIsolated) {

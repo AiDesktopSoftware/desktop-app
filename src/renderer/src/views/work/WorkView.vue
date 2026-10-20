@@ -11,6 +11,7 @@ import type {
   WorkEvidenceEvent,
   WorkEvidenceItem,
   WorkMessage,
+  WorkPreferences,
   WorkSession,
   WorkSettingsStatus,
   WorkToolCall,
@@ -91,10 +92,28 @@ const capResult = ref<{ ok: boolean; content: string } | null>(null)
 const capPanelEl = ref<HTMLElement | null>(null)
 const capFormEl = ref<HTMLElement | null>(null)
 
+// 偏好设置弹层：工具开关、默认检索来源、topK、温度、自定义提示词
+const DEFAULT_PREFS: WorkPreferences = {
+  enabledTools: [],
+  defaultProvider: 'local',
+  topK: 5,
+  temperature: 0.4,
+  extraSystemPrompt: ''
+}
+const prefs = ref<WorkPreferences>({ ...DEFAULT_PREFS })
+const prefsDraft = ref<WorkPreferences>({ ...DEFAULT_PREFS })
+const prefsOpen = ref(false)
+const prefsLoading = ref(false)
+const prefsSaving = ref(false)
+const prefsError = ref('')
+const prefsSaved = ref(false)
+const prefsPanelEl = ref<HTMLElement | null>(null)
+
 const handlers = new Map<string, PendingRequest>()
 let scrollTimer: number | undefined
 let deleteTimer: number | undefined
 let persistTimer: number | undefined
+let prefsSavedTimer: number | undefined
 let offChunk: (() => void) | undefined
 let offDone: (() => void) | undefined
 let offError: (() => void) | undefined
@@ -238,7 +257,7 @@ async function removeKb(docId: string): Promise<void> {
 function resetRagSearch(): void {
   ragRequestToken += 1
   ragQuery.value = ''
-  ragProvider.value = 'local'
+  ragProvider.value = prefs.value.defaultProvider
   ragLoading.value = false
   ragResult.value = null
   ragError.value = ''
@@ -258,7 +277,11 @@ async function searchKnowledge(): Promise<void> {
   ragResult.value = null
   ragError.value = ''
   try {
-    const result = await api.searchRag({ query: text, provider: ragProvider.value, topK: 5 })
+    const result = await api.searchRag({
+      query: text,
+      provider: ragProvider.value,
+      topK: prefs.value.topK
+    })
     if (token !== ragRequestToken) return
     if (result.ok) {
       ragResult.value = result
@@ -477,13 +500,21 @@ function applyToolEvent(assistant: WorkMessage, event: WorkToolEvent): void {
   }
 }
 
-/** 把主进程推送的来源追加到助手消息，渲染层再按 url 兜底去重 */
+/** 把主进程推送的来源追加到助手消息，渲染层再按 url 或 path 兜底去重 */
 function applyEvidence(assistant: WorkMessage, items: WorkEvidenceItem[]): void {
   if (!assistant.evidence) assistant.evidence = []
   for (const item of items) {
-    if (!item || typeof item.url !== 'string' || !item.url) continue
-    if (assistant.evidence.some((existing) => existing.url === item.url)) continue
-    assistant.evidence.push({ title: item.title || item.url, url: item.url })
+    if (!item || typeof item.title !== 'string') continue
+    const url = typeof item.url === 'string' && item.url ? item.url : ''
+    const path = typeof item.path === 'string' && item.path ? item.path : ''
+    if (!url && !path) continue
+    const key = url || path
+    if (assistant.evidence.some((existing) => (existing.url || existing.path) === key)) continue
+    assistant.evidence.push({
+      title: item.title || key,
+      ...(url ? { url } : {}),
+      ...(path ? { path } : {})
+    })
   }
 }
 
@@ -703,6 +734,7 @@ function confirmDelete(id: string): void {
 // ---------------- 能力面板 ----------------
 
 function openCaps(): void {
+  if (prefsOpen.value) closePrefs()
   capOpen.value = true
   capSelected.value = null
   capArgs.value = {}
@@ -770,15 +802,132 @@ async function executeCapability(): Promise<void> {
   }
 }
 
+// ---------------- 偏好设置 ----------------
+
+/** Agent 可调工具：只列 agentEnabled 的能力 */
+const agentCapabilities = computed(() => capabilities.value.filter((item) => item.agentEnabled))
+
+/** 空数组表示全部放开，界面按「全部开启」展示 */
+function effectiveEnabledTools(value: WorkPreferences): string[] {
+  const available = agentCapabilities.value.map((item) => item.id)
+  if (value.enabledTools.length === 0) return available
+  return available.filter((id) => value.enabledTools.includes(id))
+}
+
+function applyPrefs(next: WorkPreferences): void {
+  prefs.value = next
+  ragProvider.value = next.defaultProvider
+}
+
+async function openPrefs(): Promise<void> {
+  if (capOpen.value) closeCaps()
+  prefsOpen.value = true
+  prefsSaved.value = false
+  prefsError.value = ''
+  prefsDraft.value = { ...prefs.value, enabledTools: effectiveEnabledTools(prefs.value) }
+  void nextTick(() => prefsPanelEl.value?.focus())
+
+  // 打开时向主进程取一次最新值，避免外部改动后界面与文件不一致
+  prefsLoading.value = true
+  try {
+    const result = await api.prefsGet()
+    if (result.ok && result.preferences) {
+      const next = result.preferences
+      prefs.value = next
+      prefsDraft.value = { ...next, enabledTools: effectiveEnabledTools(next) }
+    } else if (!result.ok) {
+      prefsError.value = result.message || '读取偏好设置失败'
+    }
+  } catch (error) {
+    prefsError.value = error instanceof Error ? error.message : '读取偏好设置失败'
+  } finally {
+    prefsLoading.value = false
+  }
+}
+
+function closePrefs(): void {
+  prefsOpen.value = false
+  prefsSaved.value = false
+  prefsError.value = ''
+}
+
+function togglePrefs(): void {
+  if (prefsOpen.value) {
+    closePrefs()
+  } else {
+    void openPrefs()
+  }
+}
+
+function togglePrefTool(id: string): void {
+  const list = prefsDraft.value.enabledTools
+  prefsDraft.value.enabledTools = list.includes(id)
+    ? list.filter((item) => item !== id)
+    : [...list, id]
+}
+
+function clampInput(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(Math.max(value, min), max)
+}
+
+async function savePrefs(): Promise<void> {
+  if (prefsSaving.value) return
+  const draft = prefsDraft.value
+  if (draft.enabledTools.length === 0) {
+    prefsError.value = '请至少保留一个能力，否则 Agent 将无法调用任何工具'
+    return
+  }
+
+  prefsSaving.value = true
+  prefsError.value = ''
+  try {
+    const result = await api.prefsSet({
+      enabledTools: [...draft.enabledTools],
+      defaultProvider: draft.defaultProvider,
+      topK: clampInput(Number(draft.topK), 1, 10, 5),
+      temperature: clampInput(Number(draft.temperature), 0, 1, 0.4),
+      extraSystemPrompt: draft.extraSystemPrompt
+    })
+    if (!result.ok || !result.preferences) {
+      prefsError.value = result.message || '保存偏好设置失败'
+      return
+    }
+    applyPrefs(result.preferences)
+    prefsDraft.value = {
+      ...result.preferences,
+      enabledTools: effectiveEnabledTools(result.preferences)
+    }
+    prefsSaved.value = true
+    if (prefsSavedTimer !== undefined) window.clearTimeout(prefsSavedTimer)
+    prefsSavedTimer = window.setTimeout(() => {
+      prefsSaved.value = false
+      prefsSavedTimer = undefined
+    }, 2000)
+  } catch (error) {
+    prefsError.value = error instanceof Error ? error.message : '保存偏好设置失败'
+  } finally {
+    prefsSaving.value = false
+  }
+}
+
 function onGlobalKeydown(event: KeyboardEvent): void {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
+    if (prefsOpen.value) closePrefs()
     toggleCaps()
     return
   }
-  if (event.key === 'Escape' && capOpen.value) {
-    event.preventDefault()
-    closeCaps()
+  if (event.key === 'Escape') {
+    if (prefsOpen.value) {
+      event.preventDefault()
+      closePrefs()
+      return
+    }
+    if (capOpen.value) {
+      event.preventDefault()
+      closeCaps()
+    }
   }
 }
 
@@ -808,7 +957,8 @@ function serializeSessions(): WorkSession[] {
         ? {
             evidence: message.evidence.map((item) => ({
               title: item.title,
-              url: item.url
+              ...(item.url ? { url: item.url } : {}),
+              ...(item.path ? { path: item.path } : {})
             }))
           }
         : {}),
@@ -909,9 +1059,17 @@ onMounted(async () => {
     })
 
   try {
-    const [status, list] = await Promise.all([api.settingsStatus(), api.loadSessions()])
+    const [status, list, prefsResult] = await Promise.all([
+      api.settingsStatus(),
+      api.loadSessions(),
+      api.prefsGet()
+    ])
     settings.value = status
     sessions.value = Array.isArray(list) ? list.map(restoreSession) : []
+    if (prefsResult.ok && prefsResult.preferences) {
+      // 检索来源下拉的初始值取自偏好设置
+      applyPrefs(prefsResult.preferences)
+    }
     if (sessions.value.length > 0) {
       const latest = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0]
       activeSessionId.value = latest.id
@@ -933,6 +1091,7 @@ onBeforeUnmount(() => {
   if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
   if (deleteTimer !== undefined) window.clearTimeout(deleteTimer)
   if (persistTimer !== undefined) window.clearTimeout(persistTimer)
+  if (prefsSavedTimer !== undefined) window.clearTimeout(prefsSavedTimer)
   const requestId = currentRequestId.value
   if (requestId) void api.chatAbort(requestId)
 })
@@ -1022,6 +1181,17 @@ onBeforeUnmount(() => {
             </svg>
             能力
             <span class="cap-kbd">Ctrl K</span>
+          </button>
+          <button
+            class="icon-btn"
+            :class="{ 'is-on': prefsOpen }"
+            title="偏好设置"
+            @click="togglePrefs"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9" />
+            </svg>
           </button>
           <button
             class="icon-btn"
@@ -1269,16 +1439,20 @@ onBeforeUnmount(() => {
               <span class="note">{{ currentEvidence.length }} 条</span>
             </div>
             <ul v-if="currentEvidence.length" class="evidence">
-              <li v-for="item in currentEvidence" :key="item.url">
-                <a :href="item.url" target="_blank" rel="noreferrer" :title="item.url">
+              <li v-for="item in currentEvidence" :key="item.url || item.path">
+                <a v-if="item.url" :href="item.url" target="_blank" rel="noreferrer" :title="item.url">
                   <span class="ev-title">{{ item.title }}</span>
                   <span class="ev-host">{{ evidenceDomain(item.url) }}</span>
                 </a>
+                <div v-else class="ev-static" :title="item.path">
+                  <span class="ev-title">{{ item.title }}</span>
+                  <span class="ev-local">{{ item.path ? fileName(item.path) : '本地资料' }}</span>
+                </div>
               </li>
             </ul>
             <div v-else class="panel-empty">
               <p>来源会标注在回答中</p>
-              <span>Agent 联网搜索或读取网页后，来源会自动汇总到这里。</span>
+              <span>Agent 联网搜索、读取网页或检索本地知识库后，来源会自动汇总到这里。</span>
             </div>
           </div>
 
@@ -1396,6 +1570,91 @@ onBeforeUnmount(() => {
               <button class="cap-result-close" title="关闭结果" @click="clearCapResult">×</button>
             </div>
             <pre class="cap-result-body">{{ capResultText }}</pre>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- 偏好设置：把 Agent 已有行为的可调参数开放给用户 -->
+    <div v-if="prefsOpen" class="cap-mask" @click.self="closePrefs">
+      <div ref="prefsPanelEl" class="cap-panel prefs-panel" tabindex="-1">
+        <header class="cap-head">
+          <h4>偏好设置</h4>
+          <span v-if="prefsSaved" class="prefs-saved">已保存</span>
+          <button class="cap-close" title="关闭" @click="closePrefs">×</button>
+        </header>
+
+        <div v-if="prefsLoading" class="cap-tip">正在读取偏好设置…</div>
+
+        <template v-else>
+          <section class="prefs-section">
+            <div class="prefs-label">
+              <span>Agent 可用的能力</span>
+              <span class="prefs-count">
+                {{ prefsDraft.enabledTools.length }} / {{ agentCapabilities.length }} 开启
+              </span>
+            </div>
+            <div class="prefs-tools">
+              <div v-for="capability in agentCapabilities" :key="capability.id" class="prefs-tool">
+                <div class="prefs-tool-text">
+                  <span class="prefs-tool-name">{{ capability.label }}</span>
+                  <span class="prefs-tool-desc">{{ capability.description }}</span>
+                </div>
+                <button
+                  class="prefs-switch"
+                  :class="{ 'is-on': prefsDraft.enabledTools.includes(capability.id) }"
+                  :aria-pressed="prefsDraft.enabledTools.includes(capability.id)"
+                  @click.prevent="togglePrefTool(capability.id)"
+                >
+                  <span class="prefs-knob" />
+                </button>
+              </div>
+              <div v-if="agentCapabilities.length === 0" class="cap-tip">能力列表尚未加载。</div>
+            </div>
+          </section>
+
+          <label class="prefs-field">
+            <span class="prefs-label">默认检索来源</span>
+            <select v-model="prefsDraft.defaultProvider">
+              <option value="local">本地库</option>
+              <option value="cloud">云端公共库</option>
+              <option value="both">双路合并</option>
+            </select>
+          </label>
+
+          <div class="prefs-row">
+            <label class="prefs-field">
+              <span class="prefs-label">检索条数 topK</span>
+              <input v-model.number="prefsDraft.topK" type="number" min="1" max="10" step="1" />
+            </label>
+            <label class="prefs-field">
+              <span class="prefs-label">温度</span>
+              <input
+                v-model.number="prefsDraft.temperature"
+                type="number"
+                min="0"
+                max="1"
+                step="0.1"
+              />
+            </label>
+          </div>
+
+          <label class="prefs-field">
+            <span class="prefs-label">自定义提示词</span>
+            <textarea
+              v-model="prefsDraft.extraSystemPrompt"
+              rows="4"
+              placeholder="会追加到 Agent 系统提示词末尾"
+            />
+          </label>
+
+          <div v-if="prefsError" class="rag-error">{{ prefsError }}</div>
+
+          <div class="cap-actions">
+            <button class="cap-run" :disabled="prefsSaving" @click="savePrefs">
+              {{ prefsSaving ? '保存中…' : '保存' }}
+            </button>
+            <button class="prefs-cancel" @click="closePrefs">取消</button>
           </div>
         </template>
       </div>
@@ -2727,7 +2986,8 @@ a.rag-source-title:hover {
   list-style: none;
 }
 
-.evidence a {
+.evidence a,
+.evidence .ev-static {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -2758,6 +3018,14 @@ a.rag-source-title:hover {
 .ev-host {
   font-size: 10px;
   color: var(--accent);
+}
+
+.ev-local {
+  overflow: hidden;
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ---------------- 能力面板 ---------------- */
@@ -3056,6 +3324,177 @@ a.rag-source-title:hover {
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ---------------- 偏好设置 ---------------- */
+
+.prefs-panel {
+  width: min(560px, 100%);
+  gap: 12px;
+}
+
+.prefs-saved {
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 99px;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prefs-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.prefs-count {
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.prefs-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prefs-tool {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.prefs-tool-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.prefs-tool-name {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.prefs-tool-desc {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.prefs-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--line-2);
+  border-radius: 99px;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.prefs-switch.is-on {
+  background: var(--accent-soft);
+  border-color: rgba(61, 220, 151, 0.5);
+}
+
+.prefs-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--text-3);
+  border-radius: 99px;
+  transition: transform 0.16s ease, background 0.16s ease;
+}
+
+.prefs-switch.is-on .prefs-knob {
+  background: var(--accent);
+  transform: translateX(16px);
+}
+
+.prefs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prefs-field select,
+.prefs-field input,
+.prefs-field textarea {
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+  transition: border-color 0.16s ease;
+}
+
+.prefs-field select {
+  cursor: pointer;
+}
+
+.prefs-field select option {
+  color: var(--text);
+  background: var(--bg-2);
+}
+
+.prefs-field select:focus,
+.prefs-field input:focus,
+.prefs-field textarea:focus {
+  border-color: rgba(61, 220, 151, 0.45);
+}
+
+.prefs-field input::placeholder,
+.prefs-field textarea::placeholder {
+  color: var(--text-3);
+}
+
+.prefs-field textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.prefs-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.prefs-cancel {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.prefs-cancel:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--line-2);
 }
 
 /* ---------------- 窄窗口 ---------------- */
