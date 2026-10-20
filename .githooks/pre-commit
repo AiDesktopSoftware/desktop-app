@@ -1,0 +1,13 @@
+#!/bin/sh
+# 提交前自动做一次本地快照（不打标签、不推送），防止误删导致工作丢失。
+# 由 core.hooksPath 指到本目录生效；备份失败不阻断提交。
+
+echo "[backup] auto snapshot..."
+
+if command -v powershell >/dev/null 2>&1; then
+  if ! powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup.ps1 -NoTag >/dev/null 2>&1; then
+    echo "[backup] WARNING: auto snapshot failed, commit continues"
+  fi
+fi
+
+exit 0

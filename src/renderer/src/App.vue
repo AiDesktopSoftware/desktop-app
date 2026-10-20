@@ -23,6 +23,7 @@ const COLLAPSE_KEY = 'shell.sidebar-collapsed'
 
 const activeMode = shallowRef<ModeKey>('chat')
 const activeView = computed(() => VIEWS[activeMode.value])
+const activeModeLabel = computed(() => MODES.find((m) => m.key === activeMode.value)?.label ?? '')
 const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === '1')
 
 function toggleSidebar() {
@@ -49,82 +50,93 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="app" :class="['mode-' + activeMode, { 'is-collapsed': collapsed }]">
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <i v-for="n in 9" :key="n" />
-        </span>
-        <span class="brand-text">
-          <strong>AiDesktopSoftware</strong>
-          <small>多源采集 · 研究助手</small>
-        </span>
-        <button
-          class="collapse-btn"
-          :title="collapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)'"
-          @click="toggleSidebar"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M14 7l-5 5 5 5" />
-          </svg>
-        </button>
-      </div>
+    <!-- 自绘标题栏：与窗口按钮浮层同高，可拖动窗口 -->
+    <header class="titlebar">
+      <span class="titlebar-mark" aria-hidden="true">
+        <i v-for="n in 9" :key="n" />
+      </span>
+      <span class="titlebar-name">AI 多源信息采集与研究助手</span>
+      <span class="titlebar-mode">{{ activeModeLabel }}</span>
+    </header>
 
-      <nav class="nav">
-        <button
-          v-for="(mode, idx) in MODES"
-          :key="mode.key"
-          class="nav-item"
-          :class="{ 'is-active': activeMode === mode.key }"
-          :title="mode.label + '（Alt+' + (idx + 1) + '）'"
-          @click="activeMode = mode.key"
-        >
-          <svg
-            class="nav-icon"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <template v-if="mode.key === 'chat'">
-              <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-3.6 3v-3H6.5A2.5 2.5 0 0 1 4 13.5z" />
-              <circle cx="9.2" cy="10" r="0.9" fill="currentColor" stroke="none" />
-              <circle cx="12.5" cy="10" r="0.9" fill="currentColor" stroke="none" />
-              <circle cx="15.8" cy="10" r="0.9" fill="currentColor" stroke="none" />
-            </template>
-            <template v-else-if="mode.key === 'work'">
-              <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
-              <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
-              <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
-              <rect x="13.5" y="13.5" width="7" height="7" rx="2" />
-            </template>
-            <template v-else>
-              <circle cx="10.5" cy="10.5" r="5.5" />
-              <path d="M14.8 14.8 20 20" />
-            </template>
-          </svg>
-
-          <span class="nav-text">
-            <span class="nav-label">{{ mode.label }}</span>
-            <span class="nav-desc">{{ mode.desc }}</span>
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <i v-for="n in 9" :key="n" />
           </span>
+          <span class="brand-text">
+            <strong>AiDesktopSoftware</strong>
+            <small>多源采集 · 研究助手</small>
+          </span>
+          <button
+            class="collapse-btn"
+            :title="collapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)'"
+            @click="toggleSidebar"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 7l-5 5 5 5" />
+            </svg>
+          </button>
+        </div>
 
-          <span class="nav-owner">{{ mode.owner }}</span>
-        </button>
-      </nav>
+        <nav class="nav">
+          <button
+            v-for="(mode, idx) in MODES"
+            :key="mode.key"
+            class="nav-item"
+            :class="{ 'is-active': activeMode === mode.key }"
+            :title="mode.label + '（Alt+' + (idx + 1) + '）'"
+            @click="activeMode = mode.key"
+          >
+            <svg
+              class="nav-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <template v-if="mode.key === 'chat'">
+                <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-3.6 3v-3H6.5A2.5 2.5 0 0 1 4 13.5z" />
+                <circle cx="9.2" cy="10" r="0.9" fill="currentColor" stroke="none" />
+                <circle cx="12.5" cy="10" r="0.9" fill="currentColor" stroke="none" />
+                <circle cx="15.8" cy="10" r="0.9" fill="currentColor" stroke="none" />
+              </template>
+              <template v-else-if="mode.key === 'work'">
+                <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
+                <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
+                <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
+                <rect x="13.5" y="13.5" width="7" height="7" rx="2" />
+              </template>
+              <template v-else>
+                <circle cx="10.5" cy="10.5" r="5.5" />
+                <path d="M14.8 14.8 20 20" />
+              </template>
+            </svg>
 
-      <div class="sidebar-foot" title="Alt+1/2/3 切换模式">
-        <span class="dot" />
-        <span class="foot-text">v0.1.0 · 骨架阶段</span>
-      </div>
-    </aside>
+            <span class="nav-text">
+              <span class="nav-label">{{ mode.label }}</span>
+              <span class="nav-desc">{{ mode.desc }}</span>
+            </span>
 
-    <main class="content">
-      <Transition name="mode" mode="out-in">
-        <component :is="activeView" :key="activeMode" />
-      </Transition>
-    </main>
+            <span class="nav-owner">{{ mode.owner }}</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot" title="Alt+1/2/3 切换模式">
+          <span class="dot" />
+          <span class="foot-text">v0.1.0 · 骨架阶段</span>
+        </div>
+      </aside>
+
+      <main class="content">
+        <Transition name="mode" mode="out-in">
+          <component :is="activeView" :key="activeMode" />
+        </Transition>
+      </main>
+    </div>
   </div>
 </template>

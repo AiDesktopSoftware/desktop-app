@@ -8,8 +8,16 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
+    backgroundColor: '#0b0d11',
     autoHideMenuBar: true,
     title: 'AI 多源信息采集与研究助手',
+    // 隐藏原生标题栏，窗口按钮以深色浮层形式叠加在自绘标题栏上
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#10131a',
+      symbolColor: '#98a1b0',
+      height: 40
+    },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
