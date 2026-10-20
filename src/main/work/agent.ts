@@ -45,6 +45,30 @@ interface ToolEventPayload {
   output?: string
 }
 
+interface EvidenceItem {
+  title: string
+  url: string
+}
+
+/**
+ * 从联网搜索/网页抓取的返回文本中提取来源。
+ * web_search 是编号列表（标题行 + "URL: " 行），fetch_url 头部是 "标题：/URL："。
+ */
+function parseEvidence(name: string, content: string): EvidenceItem[] {
+  const items: EvidenceItem[] = []
+  if (name === 'web_search') {
+    const pattern = /(?:^|\n)\s*\d+\.\s*([^\n]+)\n\s*URL[:：]\s*(\S+)/g
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(content)) !== null) {
+      items.push({ title: match[1].trim(), url: match[2].trim() })
+    }
+  } else if (name === 'fetch_url') {
+    const matched = content.match(/标题[:：]\s*([^\n]*)\n\s*URL[:：]\s*(\S+)/)
+    if (matched) items.push({ title: matched[1].trim(), url: matched[2].trim() })
+  }
+  return items.filter((item) => /^https?:\/\//i.test(item.url))
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -129,6 +153,7 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
   let exhausted = true
   let toolCount = 0
   const seenCalls = new Set<string>()
+  const seenEvidence = new Set<string>()
 
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -220,6 +245,17 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
           output: outcome.content.slice(0, TOOL_OUTPUT_LIMIT)
         }
         send('work:agent:tool', finished)
+
+        // 联网类工具成功后自动汇总来源，同一请求内按 url 去重
+        if (outcome.ok && (name === 'web_search' || name === 'fetch_url')) {
+          const fresh = parseEvidence(name, outcome.content).filter(
+            (item) => !seenEvidence.has(item.url)
+          )
+          if (fresh.length > 0) {
+            for (const item of fresh) seenEvidence.add(item.url)
+            send('work:agent:evidence', { requestId, items: fresh })
+          }
+        }
 
         conversation.push({
           role: 'tool',

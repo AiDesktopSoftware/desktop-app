@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type {
+  WorkCapability,
+  WorkCapabilityPermission,
   WorkChatMessage,
+  WorkEvidenceEvent,
+  WorkEvidenceItem,
   WorkMessage,
   WorkSession,
   WorkSettingsStatus,
@@ -11,17 +15,9 @@ import type {
 
 // 【工作模式】负责人：赵
 // 当前阶段：DeepSeek Agent 工具循环 + 会话管理；工具轨迹在消息上方展示
+// 能力注册表由主进程统一下发，界面直接执行与 Agent 调用共用同一份定义
 
 const api = window.workApi
-
-const TOOL_LABELS: Record<string, string> = {
-  web_search: '联网搜索',
-  fetch_url: '读取网页',
-  list_files: '列目录',
-  read_file: '读文件',
-  write_file: '写文件',
-  run_command: '执行命令'
-}
 
 const SUGGESTIONS = [
   '梳理 2024 年以来多模态大模型在检索增强方向的进展',
@@ -40,6 +36,7 @@ interface PendingRequest {
   text: string
   onDelta?: (delta: string) => void
   onTool?: (event: WorkToolEvent) => void
+  onEvidence?: (items: WorkEvidenceItem[]) => void
   settled: boolean
   aborted: boolean
   resolve: (result: RunResult) => void
@@ -65,6 +62,16 @@ const pendingDeleteId = ref('')
 const streamEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 
+// 能力面板（Ctrl + K）：列表 -> 参数表单 -> 执行结果
+const capabilities = ref<WorkCapability[]>([])
+const capOpen = ref(false)
+const capSelected = ref<WorkCapability | null>(null)
+const capArgs = ref<Record<string, string>>({})
+const capRunning = ref(false)
+const capResult = ref<{ ok: boolean; content: string } | null>(null)
+const capPanelEl = ref<HTMLElement | null>(null)
+const capFormEl = ref<HTMLElement | null>(null)
+
 const handlers = new Map<string, PendingRequest>()
 let scrollTimer: number | undefined
 let deleteTimer: number | undefined
@@ -73,6 +80,7 @@ let offChunk: (() => void) | undefined
 let offDone: (() => void) | undefined
 let offError: (() => void) | undefined
 let offTool: (() => void) | undefined
+let offEvidence: (() => void) | undefined
 
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeSessionId.value) ?? null
@@ -113,6 +121,30 @@ const doneToolCount = computed(
   () => currentTools.value.filter((tool) => tool.status === 'done').length
 )
 
+/** 右栏证据链：当前会话最后一条带来源的助手消息 */
+const currentEvidence = computed<WorkEvidenceItem[]>(() => {
+  const messages = activeMessages.value
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const evidence = messages[i].evidence
+    if (evidence && evidence.length > 0) return evidence
+  }
+  return []
+})
+
+const capResultText = computed(() => {
+  if (!capResult.value) return ''
+  const content = capResult.value.content
+  return content.length > 2000 ? `${content.slice(0, 2000)}\n……` : content
+})
+
+function evidenceDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
 const collapsedTools = ref<Record<string, boolean>>({})
 
 function toolsOpen(message: WorkMessage): boolean {
@@ -124,8 +156,21 @@ function toggleTools(message: WorkMessage): void {
   collapsedTools.value[message.id] = toolsOpen(message) ? false : true
 }
 
+/** 工具中文名同样来自能力注册表，渲染层不再重复维护映射 */
+const capabilityLabels = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const capability of capabilities.value) map[capability.id] = capability.label
+  return map
+})
+
 function toolLabel(name: string): string {
-  return TOOL_LABELS[name] ?? name
+  return capabilityLabels.value[name] ?? name
+}
+
+function permissionText(permission: WorkCapabilityPermission): string {
+  if (permission === 'write') return '写入'
+  if (permission === 'exec') return '执行'
+  return '只读'
 }
 
 function toolArgSummary(args: Record<string, unknown>): string {
@@ -210,6 +255,7 @@ function startRequest(
   callbacks: {
     onDelta?: (delta: string) => void
     onTool?: (event: WorkToolEvent) => void
+    onEvidence?: (items: WorkEvidenceItem[]) => void
   } = {}
 ): Promise<RunResult> {
   const requestId = uid()
@@ -219,6 +265,7 @@ function startRequest(
       text: '',
       onDelta: callbacks.onDelta,
       onTool: callbacks.onTool,
+      onEvidence: callbacks.onEvidence,
       settled: false,
       aborted: false,
       resolve
@@ -302,6 +349,16 @@ function applyToolEvent(assistant: WorkMessage, event: WorkToolEvent): void {
   }
 }
 
+/** 把主进程推送的来源追加到助手消息，渲染层再按 url 兜底去重 */
+function applyEvidence(assistant: WorkMessage, items: WorkEvidenceItem[]): void {
+  if (!assistant.evidence) assistant.evidence = []
+  for (const item of items) {
+    if (!item || typeof item.url !== 'string' || !item.url) continue
+    if (assistant.evidence.some((existing) => existing.url === item.url)) continue
+    assistant.evidence.push({ title: item.title || item.url, url: item.url })
+  }
+}
+
 /**
  * Agent 对话：主进程负责工具循环，这里只负责消息、流式文字与轨迹状态。
  * assistant 传入时表示重试已有消息，不再新建消息。
@@ -311,7 +368,7 @@ async function runAgent(
   session: WorkSession,
   options: { assistant?: WorkMessage } = {}
 ): Promise<void> {
-  const assistant: WorkMessage =
+  let assistant: WorkMessage =
     options.assistant ??
     ({
       id: uid(),
@@ -323,6 +380,8 @@ async function runAgent(
 
   if (!options.assistant) {
     session.messages.push(assistant)
+    // 同样取回代理对象，保证流式文字、工具轨迹与证据链能实时刷新
+    assistant = session.messages[session.messages.length - 1]
   }
   assistant.streaming = true
   session.updatedAt = Date.now()
@@ -349,6 +408,12 @@ async function runAgent(
         applyToolEvent(assistant, event)
         session.updatedAt = Date.now()
         scheduleScroll()
+        schedulePersist()
+      },
+      onEvidence: (items) => {
+        if (stopRequested.value) return
+        applyEvidence(assistant, items)
+        session.updatedAt = Date.now()
         schedulePersist()
       }
     })
@@ -395,6 +460,8 @@ async function send(): Promise<void> {
     }
     sessions.value.unshift(session)
     activeSessionId.value = session.id
+    // 取回响应式代理：直接持有新建的原始对象时，后续字段变更不会触发渲染
+    session = sessions.value[0]
   }
   if (!session.messages.some((message) => message.role === 'user')) {
     session.title = makeTitle(text)
@@ -448,6 +515,7 @@ async function retryMessage(message: WorkMessage): Promise<void> {
   message.content = ''
   message.error = undefined
   message.tools = undefined
+  message.evidence = undefined
   await runAgent(question, session, { assistant: message })
 }
 
@@ -501,6 +569,88 @@ function confirmDelete(id: string): void {
   void persist()
 }
 
+// ---------------- 能力面板 ----------------
+
+function openCaps(): void {
+  capOpen.value = true
+  capSelected.value = null
+  capArgs.value = {}
+  capResult.value = null
+  void nextTick(() => capPanelEl.value?.focus())
+}
+
+function closeCaps(): void {
+  capOpen.value = false
+  capSelected.value = null
+  capResult.value = null
+}
+
+function toggleCaps(): void {
+  if (capOpen.value) {
+    closeCaps()
+  } else {
+    openCaps()
+  }
+}
+
+function selectCapability(capability: WorkCapability): void {
+  capSelected.value = capability
+  capResult.value = null
+  const values: Record<string, string> = {}
+  for (const field of capability.fields) values[field.key] = ''
+  capArgs.value = values
+  void nextTick(() => {
+    capFormEl.value?.querySelector<HTMLElement>('input, textarea')?.focus()
+  })
+}
+
+function backToCapList(): void {
+  capSelected.value = null
+  capResult.value = null
+  void nextTick(() => capPanelEl.value?.focus())
+}
+
+function clearCapResult(): void {
+  capResult.value = null
+}
+
+/** 与 Agent 调用同一条执行路径，直接走主进程 executeTool，不做逐次确认 */
+async function executeCapability(): Promise<void> {
+  const capability = capSelected.value
+  if (!capability || capRunning.value) return
+
+  const args: Record<string, unknown> = {}
+  for (const field of capability.fields) {
+    args[field.key] = (capArgs.value[field.key] ?? '').trim()
+  }
+
+  capRunning.value = true
+  capResult.value = null
+  try {
+    const result = await api.runCapability(capability.id, args)
+    capResult.value = { ok: result.ok, content: result.content }
+  } catch (error) {
+    capResult.value = {
+      ok: false,
+      content: error instanceof Error ? error.message : '能力执行失败'
+    }
+  } finally {
+    capRunning.value = false
+  }
+}
+
+function onGlobalKeydown(event: KeyboardEvent): void {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    toggleCaps()
+    return
+  }
+  if (event.key === 'Escape' && capOpen.value) {
+    event.preventDefault()
+    closeCaps()
+  }
+}
+
 function serializeSessions(): WorkSession[] {
   return sessions.value.map((session) => ({
     id: session.id,
@@ -520,6 +670,14 @@ function serializeSessions(): WorkSession[] {
               args: { ...tool.args },
               status: tool.status,
               ...(tool.output ? { output: tool.output.slice(0, 300) } : {})
+            }))
+          }
+        : {}),
+      ...(message.evidence?.length
+        ? {
+            evidence: message.evidence.map((item) => ({
+              title: item.title,
+              url: item.url
             }))
           }
         : {}),
@@ -602,6 +760,22 @@ onMounted(async () => {
     if (!entry) return
     entry.onTool?.(event)
   })
+  offEvidence = api.onEvidence((event: WorkEvidenceEvent) => {
+    const entry = handlers.get(event.requestId)
+    if (!entry) return
+    entry.onEvidence?.(event.items)
+  })
+  window.addEventListener('keydown', onGlobalKeydown)
+
+  // 能力元数据加载失败时面板给出提示，不影响会话与对话
+  api
+    .listCapabilities()
+    .then((list) => {
+      capabilities.value = Array.isArray(list) ? list : []
+    })
+    .catch(() => {
+      capabilities.value = []
+    })
 
   try {
     const [status, list] = await Promise.all([api.settingsStatus(), api.loadSessions()])
@@ -622,6 +796,8 @@ onBeforeUnmount(() => {
   offDone?.()
   offError?.()
   offTool?.()
+  offEvidence?.()
+  window.removeEventListener('keydown', onGlobalKeydown)
   if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
   if (deleteTimer !== undefined) window.clearTimeout(deleteTimer)
   if (persistTimer !== undefined) window.clearTimeout(persistTimer)
@@ -706,6 +882,15 @@ onBeforeUnmount(() => {
           <span class="pill" :class="{ 'is-warn': !settings.configured }">
             {{ settings.configured ? 'API 已配置' : 'API 未配置' }}
           </span>
+          <button class="cap-btn" title="打开能力面板（Ctrl + K）" @click="toggleCaps">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+              <circle cx="16" cy="7" r="2" />
+              <circle cx="8" cy="17" r="2" />
+            </svg>
+            能力
+            <span class="cap-kbd">Ctrl K</span>
+          </button>
           <button
             class="icon-btn"
             :class="{ 'is-on': panelOpen }"
@@ -850,11 +1035,19 @@ onBeforeUnmount(() => {
           <div class="insp-block">
             <div class="insp-head">
               <h4>检索来源</h4>
-              <span class="note">0 条</span>
+              <span class="note">{{ currentEvidence.length }} 条</span>
             </div>
-            <div class="panel-empty">
+            <ul v-if="currentEvidence.length" class="evidence">
+              <li v-for="item in currentEvidence" :key="item.url">
+                <a :href="item.url" target="_blank" rel="noreferrer" :title="item.url">
+                  <span class="ev-title">{{ item.title }}</span>
+                  <span class="ev-host">{{ evidenceDomain(item.url) }}</span>
+                </a>
+              </li>
+            </ul>
+            <div v-else class="panel-empty">
               <p>来源会标注在回答中</p>
-              <span>Agent 联网搜索后会把来源 URL 写入回答，右侧暂不单独汇总证据。</span>
+              <span>Agent 联网搜索或读取网页后，来源会自动汇总到这里。</span>
             </div>
           </div>
 
@@ -896,6 +1089,86 @@ onBeforeUnmount(() => {
         </template>
       </div>
     </aside>
+
+    <!-- 能力面板：列表 / 参数表单 / 执行结果 -->
+    <div v-if="capOpen" class="cap-mask" @click.self="closeCaps">
+      <div ref="capPanelEl" class="cap-panel" tabindex="-1">
+        <header class="cap-head">
+          <h4>能力面板</h4>
+          <span class="cap-kbd">Ctrl + K</span>
+          <button class="cap-close" title="关闭" @click="closeCaps">×</button>
+        </header>
+
+        <div v-if="!capSelected" class="cap-list">
+          <button
+            v-for="capability in capabilities"
+            :key="capability.id"
+            class="cap-item"
+            @click="selectCapability(capability)"
+          >
+            <span class="cap-item-top">
+              <span class="cap-name">{{ capability.label }}</span>
+              <span class="cap-perm" :class="'is-' + capability.permission">
+                {{ permissionText(capability.permission) }}
+              </span>
+            </span>
+            <span class="cap-desc">{{ capability.description }}</span>
+          </button>
+          <div v-if="capabilities.length === 0" class="cap-tip">
+            能力列表尚未加载，请稍后重试。
+          </div>
+        </div>
+
+        <template v-else>
+          <div ref="capFormEl" class="cap-form">
+            <button class="cap-back" @click="backToCapList">← 返回能力列表</button>
+            <div class="cap-form-title">
+              <span class="cap-name">{{ capSelected.label }}</span>
+              <span class="cap-perm" :class="'is-' + capSelected.permission">
+                {{ permissionText(capSelected.permission) }}
+              </span>
+            </div>
+            <p class="cap-desc">{{ capSelected.description }}</p>
+
+            <label v-for="field in capSelected.fields" :key="field.key" class="cap-field">
+              <span class="cap-field-label">{{ field.label }}</span>
+              <textarea
+                v-if="field.multiline"
+                v-model="capArgs[field.key]"
+                rows="3"
+                :placeholder="field.placeholder || ''"
+                @keydown.enter.ctrl.prevent="executeCapability"
+              />
+              <input
+                v-else
+                v-model="capArgs[field.key]"
+                type="text"
+                :placeholder="field.placeholder || ''"
+                @keydown.enter.prevent="executeCapability"
+              />
+            </label>
+
+            <div class="cap-actions">
+              <button class="cap-run" :disabled="capRunning" @click="executeCapability">
+                {{ capRunning ? '执行中…' : '执行' }}
+              </button>
+              <span class="cap-hint">回车执行，多行字段用 Ctrl + Enter</span>
+            </div>
+          </div>
+
+          <div v-if="capResult" class="cap-result" :class="capResult.ok ? 'is-ok' : 'is-error'">
+            <div class="cap-result-head">
+              <span class="cap-result-state">{{ capResult.ok ? '执行成功' : '执行失败' }}</span>
+              <span v-if="capResult.content.length > 2000" class="cap-result-note">
+                仅显示前 2000 字
+              </span>
+              <button class="cap-result-close" title="关闭结果" @click="clearCapResult">×</button>
+            </div>
+            <pre class="cap-result-body">{{ capResultText }}</pre>
+          </div>
+        </template>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -1204,6 +1477,40 @@ onBeforeUnmount(() => {
 .pill.is-warn {
   color: #ffb0b0;
   border-color: rgba(255, 107, 107, 0.3);
+}
+
+.cap-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.cap-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--line-2);
+}
+
+.cap-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.cap-kbd {
+  padding: 1px 5px;
+  font-size: 9.5px;
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 4px;
 }
 
 .icon-btn {
@@ -1833,6 +2140,347 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   font-size: 10px;
   color: var(--text-3);
+}
+
+/* ---------------- 证据链来源 ---------------- */
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 2px;
+  list-style: none;
+}
+
+.evidence a {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.evidence a:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line-2);
+}
+
+.ev-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ev-host {
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* ---------------- 能力面板 ---------------- */
+
+.cap-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 11vh 24px 24px;
+  background: rgba(5, 7, 10, 0.62);
+  backdrop-filter: blur(3px);
+}
+
+.cap-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(620px, 100%);
+  max-height: 72vh;
+  padding: 14px 14px 16px;
+  overflow: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  outline: none;
+}
+
+.cap-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 2px;
+}
+
+.cap-head h4 {
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+}
+
+.cap-close {
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-3);
+  border-radius: 6px;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+
+.cap-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cap-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.cap-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line-2);
+}
+
+.cap-item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cap-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.cap-perm {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  border-radius: 99px;
+}
+
+.cap-perm.is-read {
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cap-perm.is-write {
+  color: #ffc98a;
+  background: rgba(255, 169, 77, 0.14);
+}
+
+.cap-perm.is-exec {
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.cap-desc {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.cap-tip {
+  padding: 18px 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.cap-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cap-back {
+  align-self: flex-start;
+  padding: 2px 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+  transition: color 0.16s ease;
+}
+
+.cap-back:hover {
+  color: var(--accent);
+}
+
+.cap-form-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cap-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cap-field-label {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.cap-field input,
+.cap-field textarea {
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+  transition: border-color 0.16s ease;
+}
+
+.cap-field input:focus,
+.cap-field textarea:focus {
+  border-color: rgba(61, 220, 151, 0.45);
+}
+
+.cap-field input::placeholder,
+.cap-field textarea::placeholder {
+  color: var(--text-3);
+}
+
+.cap-field textarea {
+  resize: vertical;
+  min-height: 62px;
+}
+
+.cap-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.cap-run {
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #07120c;
+  background: var(--accent);
+  border-radius: 8px;
+  transition: filter 0.16s ease, opacity 0.16s ease;
+}
+
+.cap-run:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.cap-run:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cap-hint {
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.cap-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+}
+
+.cap-result.is-ok {
+  background: var(--accent-soft);
+  border: 1px solid rgba(61, 220, 151, 0.28);
+}
+
+.cap-result.is-error {
+  background: rgba(255, 107, 107, 0.09);
+  border: 1px solid rgba(255, 107, 107, 0.24);
+}
+
+.cap-result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cap-result-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cap-result.is-ok .cap-result-state {
+  color: var(--accent);
+}
+
+.cap-result.is-error .cap-result-state {
+  color: #ff9a9a;
+}
+
+.cap-result-note {
+  flex: 1;
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.cap-result-close {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-3);
+  border-radius: 5px;
+}
+
+.cap-result-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.cap-result-body {
+  max-height: 210px;
+  margin: 0;
+  overflow: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---------------- 窄窗口 ---------------- */

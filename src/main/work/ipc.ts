@@ -1,8 +1,10 @@
 import { ipcMain, type WebContents } from 'electron'
 import { runAgent } from './agent'
+import { capabilityMetadata, getCapability } from './capabilities'
 import { getConfig, isConfigured, maskApiKey } from './config'
 import { chatOnce, LlmError, streamChat, type LlmMessage } from './llm'
 import { loadSessions, saveSessions } from './store'
+import { executeTool } from './tools'
 import type { WorkSettingsStatus } from '../../renderer/src/views/work/types'
 
 interface ChatStartPayload {
@@ -148,4 +150,46 @@ export function registerWorkIpc(): void {
     await saveSessions(sessions)
     return { ok: true }
   })
+
+  // 能力元数据：只下发界面需要的字段，不包含执行函数与 JSON Schema
+  ipcMain.handle('work:cap:list', () => capabilityMetadata())
+
+  /**
+   * 界面直接执行能力，与 Agent 工具调用共用 executeTool。
+   * 表单字段都是字符串，按注册表 schema 把数字字段转回 number。
+   */
+  ipcMain.handle(
+    'work:cap:run',
+    async (_event, payload: { id?: unknown; args?: unknown }) => {
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      const capability = getCapability(id)
+      if (!capability) {
+        return { ok: false, content: `未知能力：${id || '(空)'}` }
+      }
+
+      const rawArgs =
+        payload?.args && typeof payload.args === 'object' && !Array.isArray(payload.args)
+          ? (payload.args as Record<string, unknown>)
+          : {}
+      const args: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(rawArgs)) {
+        const spec = capability.paramsSchema.properties[key]
+        if (!spec) continue
+        if (typeof value !== 'string') {
+          args[key] = value
+          continue
+        }
+        const trimmed = value.trim()
+        if (!trimmed && !capability.paramsSchema.required?.includes(key)) continue
+        if (spec.type === 'number') {
+          const numeric = Number(trimmed)
+          args[key] = Number.isFinite(numeric) ? numeric : trimmed
+          continue
+        }
+        args[key] = value
+      }
+
+      return executeTool(capability.id, args)
+    }
+  )
 }

@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   WorkApi,
+  WorkCapability,
+  WorkCapabilityId,
+  WorkCapabilityRunResult,
   WorkChatStartPayload,
   WorkSession,
   WorkSettingsStatus
@@ -33,12 +36,17 @@ const workApi: WorkApi = {
   onDone: (cb) => subscribe('work:chat:done', cb),
   onError: (cb) => subscribe('work:chat:error', cb),
   onTool: (cb) => subscribe('work:agent:tool', cb),
+  onEvidence: (cb) => subscribe('work:agent:evidence', cb),
   settingsStatus: () =>
     ipcRenderer.invoke('work:settings:status') as Promise<WorkSettingsStatus>,
   loadSessions: () => ipcRenderer.invoke('work:store:load') as Promise<WorkSession[]>,
   saveSessions: async (sessions: WorkSession[]) => {
     await ipcRenderer.invoke('work:store:save', sessions)
-  }
+  },
+  listCapabilities: () =>
+    ipcRenderer.invoke('work:cap:list') as Promise<WorkCapability[]>,
+  runCapability: (id: WorkCapabilityId, args: Record<string, unknown>) =>
+    ipcRenderer.invoke('work:cap:run', { id, args }) as Promise<WorkCapabilityRunResult>
 }
 
 if (process.contextIsolated) {

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import type { LlmToolSchema } from './llm'
+import { capabilitySchemas } from './capabilities'
 
 /** 工具统一返回结构：任何异常都转成 ok:false 的可读中文原因 */
 export interface ToolResult {
@@ -39,96 +40,8 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
   /\bnet\s+user\b/i
 ]
 
-/** 6 个工具的 OpenAI function calling 定义 */
-export const TOOL_SCHEMAS: LlmToolSchema[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: '联网搜索，返回标题、链接与摘要列表。需要最新信息时优先使用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '搜索关键词' },
-          limit: { type: 'number', description: '返回条数，默认 5，最多 8' }
-        },
-        required: ['query']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'fetch_url',
-      description: '抓取网页正文，自动去掉脚本与标签，正文截断到 4000 字。',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: '完整的 http/https 地址' }
-        },
-        required: ['url']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_files',
-      description: '列出目录下的文件名、类型与大小，最多 200 条。',
-      parameters: {
-        type: 'object',
-        properties: {
-          dir: { type: 'string', description: '目录路径' }
-        },
-        required: ['dir']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: '读取本地文本文件，超过 200KB 只读取前 200KB。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '文件路径' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: '写入文本文件，自动创建父目录并覆盖原内容。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '文件路径' },
-          content: { type: 'string', description: '要写入的完整文本' }
-        },
-        required: ['path', 'content']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_command',
-      description: '在本机执行 PowerShell 命令，默认在项目根目录运行，60 秒超时。',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: '要执行的命令' },
-          cwd: { type: 'string', description: '可选的工作目录，默认项目根目录' }
-        },
-        required: ['command']
-      }
-    }
-  }
-]
+/** 6 个工具的 OpenAI function calling 定义，统一来自能力注册表 */
+export const TOOL_SCHEMAS: LlmToolSchema[] = capabilitySchemas()
 
 function projectRoot(): string {
   return resolve(app.getAppPath())

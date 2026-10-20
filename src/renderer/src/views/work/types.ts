@@ -4,6 +4,40 @@
 export type WorkRole = 'user' | 'assistant'
 export type WorkToolStatus = 'running' | 'done' | 'failed'
 
+/** 与主进程能力注册表一致的 6 个能力 id */
+export type WorkCapabilityId =
+  | 'web_search'
+  | 'fetch_url'
+  | 'list_files'
+  | 'read_file'
+  | 'write_file'
+  | 'run_command'
+
+export type WorkCapabilityPermission = 'read' | 'write' | 'exec'
+
+/** 能力面板的表单字段 */
+export interface WorkCapabilityField {
+  key: string
+  label: string
+  placeholder?: string
+  multiline?: boolean
+}
+
+/** 主进程下发的能力元数据（不含函数与 JSON Schema） */
+export interface WorkCapability {
+  id: WorkCapabilityId
+  label: string
+  description: string
+  fields: WorkCapabilityField[]
+  permission: WorkCapabilityPermission
+  agentEnabled: boolean
+}
+
+export interface WorkCapabilityRunResult {
+  ok: boolean
+  content: string
+}
+
 /** Agent 执行轨迹中的一次工具调用 */
 export interface WorkToolCall {
   id: string
@@ -13,6 +47,12 @@ export interface WorkToolCall {
   output?: string
 }
 
+/** 证据链中的一条来源 */
+export interface WorkEvidenceItem {
+  title: string
+  url: string
+}
+
 export interface WorkMessage {
   id: string
   role: WorkRole
@@ -20,6 +60,8 @@ export interface WorkMessage {
   createdAt: number
   /** 助手消息的执行轨迹（工具调用） */
   tools?: WorkToolCall[]
+  /** 该轮回答自动汇总的检索来源，按 url 去重 */
+  evidence?: WorkEvidenceItem[]
   /** 仅运行时使用，持久化时剔除 */
   streaming?: boolean
   error?: string
@@ -57,6 +99,12 @@ export interface WorkToolEvent {
   output?: string
 }
 
+/** 主进程推送的证据链增量（同一请求内已按 url 去重） */
+export interface WorkEvidenceEvent {
+  requestId: string
+  items: WorkEvidenceItem[]
+}
+
 export interface WorkSettingsStatus {
   configured: boolean
   model: string
@@ -72,7 +120,13 @@ export interface WorkApi {
   onDone(cb: (payload: { requestId: string }) => void): () => void
   onError(cb: (payload: { requestId: string; message: string }) => void): () => void
   onTool(cb: (payload: WorkToolEvent) => void): () => void
+  onEvidence(cb: (payload: WorkEvidenceEvent) => void): () => void
   settingsStatus(): Promise<WorkSettingsStatus>
   loadSessions(): Promise<WorkSession[]>
   saveSessions(sessions: WorkSession[]): Promise<void>
+  listCapabilities(): Promise<WorkCapability[]>
+  runCapability(
+    id: WorkCapabilityId,
+    args: Record<string, unknown>
+  ): Promise<WorkCapabilityRunResult>
 }
