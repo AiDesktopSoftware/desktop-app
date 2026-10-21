@@ -497,6 +497,8 @@ const activePanelProps = computed<Record<string, unknown>>(() => {
       }
     case 'mode':
       return { mode: currentMode.value, labels: capabilityLabels.value }
+    case 'artifacts':
+      return { runs: flowRuns.value }
     default:
       return {}
   }
