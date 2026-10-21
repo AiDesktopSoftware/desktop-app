@@ -12,6 +12,7 @@ import type {
   WorkEvidenceEvent,
   WorkEvidenceItem,
   WorkMessage,
+  WorkMode,
   WorkPreferences,
   WorkSession,
   WorkSettingsStatus,
@@ -112,6 +113,21 @@ const prefsError = ref('')
 const prefsSaved = ref(false)
 const prefsPanelEl = ref<HTMLElement | null>(null)
 
+// 模式：决定 Agent 怎么工作（系统提示词、可用工具、温度、默认检索来源），不限定提问内容
+const MODE_STORAGE_KEY = 'work-mode-id'
+const modes = ref<WorkMode[]>([])
+const currentModeId = ref(storedModeId())
+const modeMenuOpen = ref(false)
+const modeOpen = ref(false)
+const modeLoading = ref(false)
+const modeSaving = ref(false)
+const modeError = ref('')
+const modeNotice = ref('')
+const modeSelectedId = ref('')
+const modeDraft = ref<WorkMode | null>(null)
+const modePanelEl = ref<HTMLElement | null>(null)
+const modePickerEl = ref<HTMLElement | null>(null)
+
 // 工作流弹层：模板选择 -> 填变量 -> 顺序运行 -> 步骤进度与结果
 const flowOpen = ref(false)
 const flowList = ref<WorkflowDefinition[]>([])
@@ -148,6 +164,24 @@ const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeSessionId.value) ?? null
 )
 const activeMessages = computed(() => activeSession.value?.messages ?? [])
+
+/** 当前模式：列表未加载或 id 失效时回退第一个模式 */
+const currentMode = computed<WorkMode | null>(
+  () => modes.value.find((mode) => mode.id === currentModeId.value) ?? modes.value[0] ?? null
+)
+const currentModeName = computed(() => currentMode.value?.name ?? '普通问答')
+const currentModeDescription = computed(
+  () => currentMode.value?.description ?? '直接回答，不调用外部工具'
+)
+const builtinModes = computed(() => modes.value.filter((mode) => mode.builtin))
+const customModes = computed(() => modes.value.filter((mode) => !mode.builtin))
+
+/** 输入框上方的能力提示：按当前模式实际可用的工具生成 */
+const modeToolLabels = computed(() => {
+  const ids = currentMode.value?.tools ?? []
+  if (ids.length === 0) return ['纯对话 · 不调用工具']
+  return ids.map((id) => `${capabilityLabels.value[id] ?? id} · 自动`)
+})
 
 const filteredSessions = computed(() => {
   const key = keyword.value.trim().toLowerCase()
@@ -281,7 +315,7 @@ async function removeKb(docId: string): Promise<void> {
 function resetRagSearch(): void {
   ragRequestToken += 1
   ragQuery.value = ''
-  ragProvider.value = prefs.value.defaultProvider
+  ragProvider.value = modeProvider()
   ragLoading.value = false
   ragResult.value = null
   ragError.value = ''
@@ -304,7 +338,8 @@ async function searchKnowledge(): Promise<void> {
     const result = await api.searchRag({
       query: text,
       provider: ragProvider.value,
-      topK: prefs.value.topK
+      // 模式优先，其次全局偏好
+      topK: currentMode.value?.topK ?? prefs.value.topK
     })
     if (token !== ragRequestToken) return
     if (result.ok) {
@@ -448,7 +483,7 @@ function startRequest(
     handlers.set(requestId, entry)
 
     api
-      .chatStart({ requestId, messages, mode })
+      .chatStart({ requestId, messages, mode, modeId: currentMode.value?.id })
       .then((result) => {
         settle(requestId, {
           ok: result.ok,
@@ -755,11 +790,224 @@ function confirmDelete(id: string): void {
   void persist()
 }
 
+// ---------------- 模式 ----------------
+
+function storedModeId(): string {
+  try {
+    return window.localStorage.getItem(MODE_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** 检索来源：模式优先，其次全局偏好 */
+function modeProvider(): RagProviderId {
+  return currentMode.value?.ragProvider ?? prefs.value.defaultProvider
+}
+
+function applyModeProvider(): void {
+  ragProvider.value = modeProvider()
+}
+
+/** 切换模式立即生效，只影响下一条消息；选择写入 localStorage 便于下次启动恢复 */
+function selectMode(mode: WorkMode): void {
+  currentModeId.value = mode.id
+  try {
+    window.localStorage.setItem(MODE_STORAGE_KEY, mode.id)
+  } catch {
+    // 本地存储不可用时只在本次运行内生效
+  }
+  applyModeProvider()
+  modeMenuOpen.value = false
+}
+
+function toggleModeMenu(): void {
+  if (!modeMenuOpen.value) {
+    if (capOpen.value) closeCaps()
+    if (prefsOpen.value) closePrefs()
+    if (flowOpen.value) closeFlows()
+    if (modeOpen.value) closeModes()
+  }
+  modeMenuOpen.value = !modeMenuOpen.value
+}
+
+async function refreshModes(): Promise<void> {
+  modeLoading.value = true
+  try {
+    const result = await api.modeList()
+    if (!result.ok) {
+      modeError.value = result.message || '读取模式失败'
+      return
+    }
+    modes.value = Array.isArray(result.modes) ? result.modes : []
+    if (!modes.value.some((mode) => mode.id === currentModeId.value)) {
+      const stored = storedModeId()
+      currentModeId.value = modes.value.some((mode) => mode.id === stored)
+        ? stored
+        : (modes.value[0]?.id ?? '')
+      try {
+        window.localStorage.setItem(MODE_STORAGE_KEY, currentModeId.value)
+      } catch {
+        // 本地存储不可用时只在本次运行内生效
+      }
+    }
+    applyModeProvider()
+    if (modeSelectedId.value && !modes.value.some((mode) => mode.id === modeSelectedId.value)) {
+      modeSelectedId.value = ''
+      modeDraft.value = null
+    }
+  } catch (error) {
+    modeError.value = error instanceof Error ? error.message : '读取模式失败'
+  } finally {
+    modeLoading.value = false
+  }
+}
+
+function openModes(): void {
+  if (capOpen.value) closeCaps()
+  if (prefsOpen.value) closePrefs()
+  if (flowOpen.value) closeFlows()
+  modeMenuOpen.value = false
+  modeOpen.value = true
+  modeError.value = ''
+  modeNotice.value = ''
+  void nextTick(() => modePanelEl.value?.focus())
+  void refreshModes().then(() => {
+    const target =
+      modes.value.find((mode) => mode.id === currentModeId.value) ?? modes.value[0] ?? null
+    if (target) selectModeForEdit(target)
+  })
+}
+
+function closeModes(): void {
+  modeOpen.value = false
+  modeError.value = ''
+  modeNotice.value = ''
+}
+
+function selectModeForEdit(mode: WorkMode): void {
+  modeSelectedId.value = mode.id
+  modeDraft.value = { ...mode, tools: [...mode.tools] }
+  modeError.value = ''
+  modeNotice.value = ''
+}
+
+function toggleModeDraftTool(id: string): void {
+  const draft = modeDraft.value
+  if (!draft || draft.builtin) return
+  draft.tools = draft.tools.includes(id)
+    ? draft.tools.filter((item) => item !== id)
+    : [...draft.tools, id]
+}
+
+async function saveModeDraft(): Promise<void> {
+  const draft = modeDraft.value
+  if (!draft || modeSaving.value) return
+  if (draft.builtin) {
+    modeError.value = '内置模式不可修改，复制后可自由调整'
+    return
+  }
+  if (!draft.name.trim()) {
+    modeError.value = '模式名称不能为空'
+    return
+  }
+
+  modeSaving.value = true
+  modeError.value = ''
+  modeNotice.value = ''
+  try {
+    const result = await api.modeSave({
+      ...draft,
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      systemPrompt: draft.systemPrompt,
+      temperature: clampInput(Number(draft.temperature), 0, 1, 0.4),
+      topK: clampInput(Number(draft.topK), 1, 10, 5)
+    })
+    if (!result.ok || !result.mode) {
+      modeError.value = result.message || '保存模式失败'
+      return
+    }
+    await refreshModes()
+    selectModeForEdit(result.mode)
+    modeNotice.value = '已保存，新设置从下一条消息开始生效'
+  } catch (error) {
+    modeError.value = error instanceof Error ? error.message : '保存模式失败'
+  } finally {
+    modeSaving.value = false
+  }
+}
+
+async function duplicateModeDraft(): Promise<void> {
+  const draft = modeDraft.value
+  if (!draft || modeSaving.value) return
+
+  modeSaving.value = true
+  modeError.value = ''
+  modeNotice.value = ''
+  try {
+    const result = await api.modeDuplicate(draft.id)
+    if (!result.ok || !result.mode) {
+      modeError.value = result.message || '复制模式失败'
+      return
+    }
+    await refreshModes()
+    selectModeForEdit(result.mode)
+    modeNotice.value = `已复制为「${result.mode.name}」，可直接修改`
+  } catch (error) {
+    modeError.value = error instanceof Error ? error.message : '复制模式失败'
+  } finally {
+    modeSaving.value = false
+  }
+}
+
+async function removeModeDraft(): Promise<void> {
+  const draft = modeDraft.value
+  if (!draft || modeSaving.value) return
+  if (draft.builtin) {
+    modeError.value = '内置模式不能删除，请先复制一份'
+    return
+  }
+
+  modeSaving.value = true
+  modeError.value = ''
+  modeNotice.value = ''
+  try {
+    const result = await api.modeRemove(draft.id)
+    if (!result.ok) {
+      modeError.value = result.message || '删除模式失败'
+      return
+    }
+    await refreshModes()
+    if (currentModeId.value === draft.id) {
+      currentModeId.value = modes.value[0]?.id ?? ''
+      applyModeProvider()
+    }
+    const next = modes.value.find((mode) => mode.id === currentModeId.value) ?? modes.value[0]
+    if (next) selectModeForEdit(next)
+    modeNotice.value = '已删除该模式'
+  } catch (error) {
+    modeError.value = error instanceof Error ? error.message : '删除模式失败'
+  } finally {
+    modeSaving.value = false
+  }
+}
+
+/** 内置模式只读，这里只是重新载入默认值，不做写操作 */
+function restoreModeDefault(): void {
+  const mode = modes.value.find((item) => item.id === modeSelectedId.value)
+  if (!mode) return
+  selectModeForEdit(mode)
+  modeNotice.value = '内置模式为只读，已恢复为默认配置'
+}
+
 // ---------------- 能力面板 ----------------
 
 function openCaps(): void {
   if (prefsOpen.value) closePrefs()
   if (flowOpen.value) closeFlows()
+  if (modeOpen.value) closeModes()
+  modeMenuOpen.value = false
   capOpen.value = true
   capSelected.value = null
   capArgs.value = {}
@@ -841,12 +1089,14 @@ function effectiveEnabledTools(value: WorkPreferences): string[] {
 
 function applyPrefs(next: WorkPreferences): void {
   prefs.value = next
-  ragProvider.value = next.defaultProvider
+  applyModeProvider()
 }
 
 async function openPrefs(): Promise<void> {
   if (capOpen.value) closeCaps()
   if (flowOpen.value) closeFlows()
+  if (modeOpen.value) closeModes()
+  modeMenuOpen.value = false
   prefsOpen.value = true
   prefsSaved.value = false
   prefsError.value = ''
@@ -1027,6 +1277,8 @@ async function refreshFlowRuns(): Promise<void> {
 async function openFlows(): Promise<void> {
   if (prefsOpen.value) closePrefs()
   if (capOpen.value) closeCaps()
+  if (modeOpen.value) closeModes()
+  modeMenuOpen.value = false
   flowOpen.value = true
   flowError.value = ''
   void nextTick(() => flowPanelEl.value?.focus())
@@ -1154,15 +1406,35 @@ function openRunDetail(run: WorkflowRun): void {
   flowDetailRun.value = flowDetailRun.value?.id === run.id ? null : run
 }
 
+/** 点击模式选择器以外的区域时收起下拉菜单 */
+function onWindowClick(event: MouseEvent): void {
+  if (!modeMenuOpen.value) return
+  const picker = modePickerEl.value
+  if (picker && event.target instanceof Node && picker.contains(event.target)) return
+  modeMenuOpen.value = false
+}
+
 function onGlobalKeydown(event: KeyboardEvent): void {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     if (prefsOpen.value) closePrefs()
     if (flowOpen.value) closeFlows()
+    if (modeOpen.value) closeModes()
+    modeMenuOpen.value = false
     toggleCaps()
     return
   }
   if (event.key === 'Escape') {
+    if (modeMenuOpen.value) {
+      event.preventDefault()
+      modeMenuOpen.value = false
+      return
+    }
+    if (modeOpen.value) {
+      event.preventDefault()
+      closeModes()
+      return
+    }
     if (prefsOpen.value) {
       event.preventDefault()
       closePrefs()
@@ -1315,6 +1587,7 @@ onMounted(async () => {
     void refreshFlowRuns()
   })
   window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('click', onWindowClick)
 
   // 能力元数据加载失败时面板给出提示，不影响会话与对话
   api
@@ -1335,9 +1608,10 @@ onMounted(async () => {
     settings.value = status
     sessions.value = Array.isArray(list) ? list.map(restoreSession) : []
     if (prefsResult.ok && prefsResult.preferences) {
-      // 检索来源下拉的初始值取自偏好设置
+      // 检索来源的初始值优先取当前模式，其次偏好设置
       applyPrefs(prefsResult.preferences)
     }
+    await refreshModes()
     if (sessions.value.length > 0) {
       const latest = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0]
       activeSessionId.value = latest.id
@@ -1358,6 +1632,7 @@ onBeforeUnmount(() => {
   offFlowStep?.()
   offFlowDone?.()
   window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('click', onWindowClick)
   if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
   if (deleteTimer !== undefined) window.clearTimeout(deleteTimer)
   if (persistTimer !== undefined) window.clearTimeout(persistTimer)
@@ -1435,6 +1710,37 @@ onBeforeUnmount(() => {
     <!-- 中：对话流 -->
     <section class="main">
       <header class="topbar">
+        <div ref="modePickerEl" class="mode-picker">
+          <button
+            class="mode-btn"
+            :class="{ 'is-open': modeMenuOpen }"
+            title="切换工作模式"
+            @click="toggleModeMenu"
+          >
+            <span class="mode-btn-label">{{ currentModeName }}</span>
+            <span class="mode-btn-caret">▾</span>
+          </button>
+          <div v-if="modeMenuOpen" class="mode-menu">
+            <button
+              v-for="mode in modes"
+              :key="mode.id"
+              class="mode-menu-item"
+              :class="{ 'is-active': mode.id === currentModeId }"
+              @click="selectMode(mode)"
+            >
+              <span class="mode-menu-top">
+                <span class="mode-menu-name">{{ mode.name }}</span>
+                <span v-if="!mode.builtin" class="mode-menu-badge">我的</span>
+                <span v-if="mode.id === currentModeId" class="mode-menu-check">✓</span>
+              </span>
+              <span class="mode-menu-desc">{{ mode.description }}</span>
+            </button>
+            <div v-if="modes.length === 0" class="mode-menu-empty">模式列表加载中…</div>
+            <div class="mode-menu-foot">
+              <button class="mode-menu-manage" @click="openModes">管理模式…</button>
+            </div>
+          </div>
+        </div>
         <div class="crumb">
           <span class="live-dot" :class="{ 'is-busy': busy }" />
           <h2>{{ activeSession?.title || '新的研究任务' }}</h2>
@@ -1497,8 +1803,8 @@ onBeforeUnmount(() => {
           </div>
           <h3>开始一个研究任务</h3>
           <p>
-            描述研究问题，Agent 会自动联网搜索、读取网页、读写本地文件或执行命令，
-            最后给出带来源的结论，全程无需逐步确认。
+            {{ currentModeDescription }}。
+            在下方直接描述你的问题，Agent 会按所选模式工作，不会强制走固定步骤。
           </p>
           <div class="suggests">
             <button
@@ -1574,10 +1880,12 @@ onBeforeUnmount(() => {
 
       <footer class="composer">
         <div class="composer-box">
+          <div class="composer-mode" :title="currentModeDescription">
+            <span class="composer-mode-name">{{ currentModeName }}</span>
+            <span class="composer-mode-desc">{{ currentModeDescription }}</span>
+          </div>
           <div class="composer-chips">
-            <span class="chip">联网搜索 · 自动</span>
-            <span class="chip">文件读写 · 自动</span>
-            <span class="chip">本机命令 · 自动</span>
+            <span v-for="label in modeToolLabels" :key="label" class="chip">{{ label }}</span>
           </div>
           <textarea
             ref="textareaEl"
@@ -1937,6 +2245,182 @@ onBeforeUnmount(() => {
             <button class="prefs-cancel" @click="closePrefs">取消</button>
           </div>
         </template>
+      </div>
+    </div>
+    <!-- 模式管理：内置只读，自定义可改；模式只决定 Agent 的工作方式 -->
+    <div v-if="modeOpen" class="cap-mask" @click.self="closeModes">
+      <div ref="modePanelEl" class="cap-panel mode-panel" tabindex="-1">
+        <header class="cap-head">
+          <h4>模式管理</h4>
+          <span class="cap-kbd">模式决定 Agent 的工作方式</span>
+          <button class="cap-close" title="关闭" @click="closeModes">×</button>
+        </header>
+
+        <div class="mode-body">
+          <aside class="mode-side">
+            <div class="rail-label">内置模式</div>
+            <button
+              v-for="mode in builtinModes"
+              :key="mode.id"
+              class="flow-item"
+              :class="{ 'is-active': modeSelectedId === mode.id }"
+              @click="selectModeForEdit(mode)"
+            >
+              <span class="flow-item-top">
+                <span class="flow-name" :title="mode.name">{{ mode.name }}</span>
+                <span class="flow-badge">内置</span>
+              </span>
+              <span class="flow-desc">{{ mode.description }}</span>
+            </button>
+
+            <div class="rail-label">我的模式</div>
+            <button
+              v-for="mode in customModes"
+              :key="mode.id"
+              class="flow-item"
+              :class="{ 'is-active': modeSelectedId === mode.id }"
+              @click="selectModeForEdit(mode)"
+            >
+              <span class="flow-item-top">
+                <span class="flow-name" :title="mode.name">{{ mode.name }}</span>
+                <span class="flow-badge is-custom">我的</span>
+              </span>
+              <span class="flow-desc">{{ mode.description || '自定义模式' }}</span>
+            </button>
+            <div v-if="customModes.length === 0" class="flow-tip">
+              还没有自定义模式，可从内置模式复制一份再调整。
+            </div>
+            <div v-if="modeLoading && modes.length === 0" class="flow-tip">正在读取模式…</div>
+          </aside>
+
+          <div class="mode-main">
+            <div v-if="!modeDraft" class="cap-tip">从左侧选择一个模式查看或编辑。</div>
+
+            <template v-else>
+              <div class="mode-title-row">
+                <span class="flow-title">{{ modeDraft.name || '未命名模式' }}</span>
+                <span class="flow-badge" :class="{ 'is-custom': !modeDraft.builtin }">
+                  {{ modeDraft.builtin ? '内置' : '我的' }}
+                </span>
+                <span v-if="modeDraft.builtin" class="mode-readonly">
+                  内置模式不可修改，复制后可自由调整
+                </span>
+              </div>
+
+              <label class="cap-field">
+                <span class="cap-field-label">名称</span>
+                <input v-model="modeDraft.name" type="text" :disabled="modeDraft.builtin" />
+              </label>
+
+              <label class="cap-field">
+                <span class="cap-field-label">说明</span>
+                <input
+                  v-model="modeDraft.description"
+                  type="text"
+                  placeholder="一句话说明这个模式适合什么任务"
+                  :disabled="modeDraft.builtin"
+                />
+              </label>
+
+              <label class="cap-field">
+                <span class="cap-field-label">系统提示词</span>
+                <textarea
+                  v-model="modeDraft.systemPrompt"
+                  rows="6"
+                  placeholder="描述该模式的职责与边界，会追加到基础规则之后"
+                  :disabled="modeDraft.builtin"
+                />
+              </label>
+
+              <div class="prefs-section">
+                <div class="prefs-label">
+                  <span>可用工具</span>
+                  <span class="prefs-count">关闭后该模式不能调用此工具</span>
+                </div>
+                <div class="prefs-tools">
+                  <div v-for="capability in agentCapabilities" :key="capability.id" class="prefs-tool">
+                    <div class="prefs-tool-text">
+                      <span class="prefs-tool-name">{{ capability.label }}</span>
+                      <span class="prefs-tool-desc">{{ capability.description }}</span>
+                    </div>
+                    <button
+                      class="prefs-switch"
+                      :class="{ 'is-on': modeDraft.tools.includes(capability.id) }"
+                      :disabled="modeDraft.builtin"
+                      :aria-pressed="modeDraft.tools.includes(capability.id)"
+                      @click.prevent="toggleModeDraftTool(capability.id)"
+                    >
+                      <span class="prefs-knob" />
+                    </button>
+                  </div>
+                  <div v-if="agentCapabilities.length === 0" class="cap-tip">能力列表尚未加载。</div>
+                </div>
+              </div>
+
+              <div class="prefs-row">
+                <label class="prefs-field">
+                  <span class="prefs-label">温度 0-1</span>
+                  <input
+                    v-model.number="modeDraft.temperature"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    :disabled="modeDraft.builtin"
+                  />
+                </label>
+                <label class="prefs-field">
+                  <span class="prefs-label">检索条数 topK</span>
+                  <input
+                    v-model.number="modeDraft.topK"
+                    type="number"
+                    min="1"
+                    max="10"
+                    step="1"
+                    :disabled="modeDraft.builtin"
+                  />
+                </label>
+              </div>
+
+              <label class="prefs-field">
+                <span class="prefs-label">默认检索来源</span>
+                <select v-model="modeDraft.ragProvider" :disabled="modeDraft.builtin">
+                  <option value="local">本地库</option>
+                  <option value="cloud">云端公共库</option>
+                  <option value="both">双路合并</option>
+                </select>
+              </label>
+
+              <div v-if="modeError" class="rag-error">{{ modeError }}</div>
+              <div v-if="modeNotice" class="kb-notice">{{ modeNotice }}</div>
+
+              <div class="cap-actions">
+                <button
+                  v-if="!modeDraft.builtin"
+                  class="cap-run"
+                  :disabled="modeSaving"
+                  @click="saveModeDraft"
+                >
+                  {{ modeSaving ? '保存中…' : '保存' }}
+                </button>
+                <button class="prefs-cancel" :disabled="modeSaving" @click="duplicateModeDraft">
+                  复制为新模式
+                </button>
+                <button
+                  v-if="!modeDraft.builtin"
+                  class="mode-del"
+                  :disabled="modeSaving"
+                  @click="removeModeDraft"
+                >
+                  删除
+                </button>
+                <button v-else class="prefs-cancel" @click="restoreModeDefault">
+                  恢复内置默认
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
       </div>
     </div>
     <!-- 工作流：模板 / 参数 / 步骤进度 / 结果 / 最近运行 -->
@@ -2391,8 +2875,146 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(6px);
 }
 
+/* ---------------- 模式选择器 ---------------- */
+
+.mode-picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 132px;
+  padding: 4px 9px;
+  font-size: 11.5px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.mode-btn:hover,
+.mode-btn.is-open {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--line-2);
+}
+
+.mode-btn-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mode-btn-caret {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--text-3);
+}
+
+.mode-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 272px;
+  max-height: 340px;
+  padding: 7px;
+  overflow: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+.mode-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.mode-menu-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mode-menu-item.is-active {
+  background: var(--accent-soft);
+  border-color: rgba(61, 220, 151, 0.32);
+}
+
+.mode-menu-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-menu-name {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.mode-menu-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  font-size: 9px;
+  line-height: 15px;
+  color: #8fb4ff;
+  background: rgba(96, 145, 255, 0.14);
+  border-radius: 99px;
+}
+
+.mode-menu-check {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.mode-menu-desc {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.mode-menu-empty {
+  padding: 10px 8px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.mode-menu-foot {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.mode-menu-manage {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  text-align: left;
+  border-radius: 6px;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.mode-menu-manage:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .crumb {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -2867,8 +3489,32 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px rgba(61, 220, 151, 0.08);
 }
 
+.composer-mode {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 2px 5px;
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.composer-mode-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.composer-mode-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .composer-chips {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding-bottom: 6px;
 }
@@ -4464,6 +5110,84 @@ a.rag-source-title:hover {
   word-break: break-word;
 }
 
+/* ---------------- 模式管理 ---------------- */
+
+.mode-panel {
+  width: min(900px, 100%);
+  max-height: 84vh;
+  gap: 12px;
+}
+
+.mode-body {
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.mode-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  padding-right: 10px;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+}
+
+.mode-main {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-height: 62vh;
+  min-height: 0;
+  padding-right: 4px;
+  overflow: auto;
+}
+
+.mode-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-readonly {
+  overflow: hidden;
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.flow-badge.is-custom {
+  color: #8fb4ff;
+  background: rgba(96, 145, 255, 0.14);
+}
+
+.prefs-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mode-del {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #ff9a9a;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.28);
+  border-radius: 8px;
+  transition: background 0.16s ease, opacity 0.16s ease;
+}
+
+.mode-del:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.2);
+}
+
+.mode-del:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ---------------- 窄窗口 ---------------- */
 
 @media (max-width: 1180px) {
@@ -4489,6 +5213,21 @@ a.rag-source-title:hover {
 
   .flow-body {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mode-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mode-side {
+    max-height: 26vh;
+    padding-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .mode-main {
+    max-height: none;
   }
 
   .flow-side {

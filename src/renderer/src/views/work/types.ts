@@ -4,6 +4,7 @@
 import type { RagQuery, RagResult } from '../../../../main/work/rag/types'
 import type { KbDocument } from '../../../../main/work/kb/types'
 import type { WorkPreferences } from '../../../../main/work/config'
+import type { WorkMode } from '../../../../main/work/modes/types'
 import type { WorkflowDefinition, WorkflowRun } from '../../../../main/work/workflow/types'
 
 export type {
@@ -17,6 +18,8 @@ export type {
 export type { KbChunk, KbDocument, KbIndex } from '../../../../main/work/kb/types'
 
 export type { WorkPreferences }
+
+export type { WorkMode } from '../../../../main/work/modes/types'
 
 export type {
   RunStep,
@@ -113,6 +116,8 @@ export interface WorkChatStartPayload {
   requestId: string
   messages: WorkChatMessage[]
   mode: 'chat' | 'plan' | 'agent'
+  /** 当前模式 id：只决定 Agent 怎么工作，不限定提问内容 */
+  modeId?: string
   model?: string
   temperature?: number
 }
@@ -137,6 +142,32 @@ export interface WorkEvidenceEvent {
 export interface WorkPreferencesResult {
   ok: boolean
   preferences?: WorkPreferences
+  message?: string
+}
+
+// ---------------- 工作模式 ----------------
+
+export interface WorkModeListResult {
+  ok: boolean
+  modes: WorkMode[]
+  message?: string
+}
+
+export interface WorkModeGetResult {
+  ok: boolean
+  mode?: WorkMode
+  message?: string
+}
+
+/** 保存 / 复制模式的结果 */
+export interface WorkModeResult {
+  ok: boolean
+  mode?: WorkMode
+  message?: string
+}
+
+export interface WorkModeRemoveResult {
+  ok: boolean
   message?: string
 }
 
@@ -241,6 +272,10 @@ export interface WorkApi {
   kbRemove(docId: string): Promise<WorkKbRemoveResult>
   prefsGet(): Promise<WorkPreferencesResult>
   prefsSet(patch: Partial<WorkPreferences>): Promise<WorkPreferencesResult>
+  modeList(): Promise<WorkModeListResult>
+  modeSave(mode: WorkMode): Promise<WorkModeResult>
+  modeDuplicate(id: string): Promise<WorkModeResult>
+  modeRemove(id: string): Promise<WorkModeRemoveResult>
   flowList(): Promise<WorkFlowListResult>
   flowSave(workflow: WorkflowDefinition): Promise<WorkFlowSaveResult>
   flowRemove(id: string): Promise<WorkFlowRemoveResult>

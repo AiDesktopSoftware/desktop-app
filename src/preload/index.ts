@@ -17,6 +17,10 @@ import type {
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
+  WorkMode,
+  WorkModeListResult,
+  WorkModeRemoveResult,
+  WorkModeResult,
   WorkPreferences,
   WorkPreferencesResult,
   WorkSession,
@@ -73,6 +77,13 @@ const workApi: WorkApi = {
     ipcRenderer.invoke('work:prefs:get') as Promise<WorkPreferencesResult>,
   prefsSet: (patch: Partial<WorkPreferences>) =>
     ipcRenderer.invoke('work:prefs:set', { patch }) as Promise<WorkPreferencesResult>,
+  modeList: () => ipcRenderer.invoke('work:mode:list') as Promise<WorkModeListResult>,
+  modeSave: (mode: WorkMode) =>
+    ipcRenderer.invoke('work:mode:save', { mode }) as Promise<WorkModeResult>,
+  modeDuplicate: (id: string) =>
+    ipcRenderer.invoke('work:mode:duplicate', { id }) as Promise<WorkModeResult>,
+  modeRemove: (id: string) =>
+    ipcRenderer.invoke('work:mode:remove', { id }) as Promise<WorkModeRemoveResult>,
   flowList: () => ipcRenderer.invoke('work:flow:list') as Promise<WorkFlowListResult>,
   flowSave: (workflow: WorkflowDefinition) =>
     ipcRenderer.invoke('work:flow:save', { workflow }) as Promise<WorkFlowSaveResult>,

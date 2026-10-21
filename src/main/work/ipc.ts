@@ -6,6 +6,13 @@ import { getConfig, getPreferences, isConfigured, maskApiKey, savePreferences } 
 import { importFiles, removeDocument } from './kb/ingest'
 import { loadIndex } from './kb/store'
 import { chatOnce, LlmError, streamChat, type LlmMessage } from './llm'
+import {
+  duplicateMode,
+  getMode,
+  listModes,
+  removeMode,
+  saveMode
+} from './modes/store'
 import { loadSessions, saveSessions } from './store'
 import { executeTool } from './tools'
 import { searchRag } from './rag/provider'
@@ -22,6 +29,10 @@ import type {
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
+  WorkModeGetResult,
+  WorkModeListResult,
+  WorkModeRemoveResult,
+  WorkModeResult,
   WorkPreferences,
   WorkPreferencesResult,
   WorkSettingsStatus
@@ -31,6 +42,7 @@ interface ChatStartPayload {
   requestId?: unknown
   messages?: unknown
   mode?: unknown
+  modeId?: unknown
   model?: unknown
   temperature?: unknown
 }
@@ -101,6 +113,7 @@ export function registerWorkIpc(): void {
 
     const mode =
       payload.mode === 'plan' ? 'plan' : payload.mode === 'agent' ? 'agent' : 'chat'
+    const modeId = typeof payload.modeId === 'string' && payload.modeId ? payload.modeId : undefined
     const model = typeof payload.model === 'string' && payload.model ? payload.model : undefined
     const temperature =
       typeof payload.temperature === 'number' && Number.isFinite(payload.temperature)
@@ -118,6 +131,7 @@ export function registerWorkIpc(): void {
         await runAgent({
           requestId,
           messages,
+          modeId,
           model,
           temperature,
           signal: controller.signal,
@@ -202,6 +216,66 @@ export function registerWorkIpc(): void {
         return { ok: true, preferences }
       } catch (error) {
         return { ok: false, message: `保存偏好设置失败：${errorDetail(error)}` }
+      }
+    }
+  )
+
+  // ---------------- 工作模式 ----------------
+
+  ipcMain.handle('work:mode:list', async (): Promise<WorkModeListResult> => {
+    try {
+      return { ok: true, modes: await listModes() }
+    } catch (error) {
+      return { ok: false, modes: [], message: `读取模式失败：${errorDetail(error)}` }
+    }
+  })
+
+  ipcMain.handle(
+    'work:mode:get',
+    async (_event, payload: { id?: unknown }): Promise<WorkModeGetResult> => {
+      try {
+        const id = typeof payload?.id === 'string' ? payload.id : undefined
+        return { ok: true, mode: await getMode(id) }
+      } catch (error) {
+        return { ok: false, message: `读取模式失败：${errorDetail(error)}` }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'work:mode:save',
+    async (_event, payload: { mode?: unknown }): Promise<WorkModeResult> => {
+      try {
+        return { ok: true, mode: await saveMode(payload?.mode) }
+      } catch (error) {
+        return { ok: false, message: errorDetail(error) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'work:mode:duplicate',
+    async (_event, payload: { id?: unknown }): Promise<WorkModeResult> => {
+      try {
+        const id = typeof payload?.id === 'string' ? payload.id : ''
+        if (!id) return { ok: false, message: '缺少模式标识，无法复制' }
+        return { ok: true, mode: await duplicateMode(id) }
+      } catch (error) {
+        return { ok: false, message: errorDetail(error) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'work:mode:remove',
+    async (_event, payload: { id?: unknown }): Promise<WorkModeRemoveResult> => {
+      try {
+        const id = typeof payload?.id === 'string' ? payload.id : ''
+        if (!id) return { ok: false, message: '缺少模式标识，无法删除' }
+        await removeMode(id)
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, message: errorDetail(error) }
       }
     }
   )

@@ -5,9 +5,10 @@ import {
   type LlmMessage,
   type LlmToolCall
 } from './llm'
-import { capabilitySchemas } from './capabilities'
+import { CAPABILITIES, capabilitySchemas } from './capabilities'
 import { getPreferences } from './config'
 import { loadIndex } from './kb/store'
+import { getMode } from './modes/store'
 import { executeTool } from './tools'
 
 const MAX_ROUNDS = 10
@@ -35,10 +36,24 @@ export type AgentSend = (channel: string, payload: unknown) => void
 export interface AgentRunOptions {
   requestId: string
   messages: LlmMessage[]
+  /** 本次对话使用的模式；缺省时回退普通问答 */
+  modeId?: string
   model?: string
   temperature?: number
   send: AgentSend
   signal: AbortSignal
+}
+
+/**
+ * 工具白名单取「模式 tools」与「全局 enabledTools」的交集。
+ * 全局 enabledTools 为空表示全部开放；模式 tools 为空则不开放任何工具。
+ */
+function resolveToolIds(modeTools: string[], enabledTools: string[]): string[] {
+  const agentIds = CAPABILITIES.filter((capability) => capability.agentEnabled).map(
+    (capability) => capability.id
+  )
+  const globalIds = enabledTools.length > 0 ? enabledTools : agentIds
+  return modeTools.filter((id) => globalIds.includes(id))
 }
 
 interface ToolEventPayload {
@@ -181,12 +196,21 @@ async function forceFinalAnswer(
  */
 export async function runAgent(options: AgentRunOptions): Promise<void> {
   const { requestId, send, signal } = options
-  // 偏好设置每次请求重新读取，改完设置后无需重启应用
+  // 偏好设置与模式每次请求重新读取，改完设置后无需重启应用
   const preferences = getPreferences()
-  const temperature = options.temperature ?? preferences.temperature
+  const mode = await getMode(options.modeId)
+  // 调用方显式传温度时优先，否则用模式温度
+  const temperature = options.temperature ?? mode.temperature
   const extraPrompt = preferences.extraSystemPrompt.trim()
-  const systemPrompt = extraPrompt ? `${AGENT_SYSTEM}\n\n${extraPrompt}` : AGENT_SYSTEM
-  const toolSchemas = capabilitySchemas(preferences.enabledTools)
+  // 基础规则 + 模式职责 + 用户全局提示词
+  const promptParts = [AGENT_SYSTEM, mode.systemPrompt.trim(), extraPrompt].filter(
+    (part) => part.length > 0
+  )
+  const systemPrompt = promptParts.join('\n\n')
+  // 模式工具为空时 capabilitySchemas 不收窄，这里显式给空数组，即纯对话
+  const allowedToolIds = resolveToolIds(mode.tools, preferences.enabledTools)
+  const toolSchemas =
+    allowedToolIds.length > 0 ? capabilitySchemas(allowedToolIds) : []
 
   const history: LlmAgentMessage[] = options.messages
     .filter((message) => message.content.trim().length > 0)
