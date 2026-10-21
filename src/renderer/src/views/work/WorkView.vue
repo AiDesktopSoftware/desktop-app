@@ -1708,6 +1708,113 @@ async function removeFlow(workflow: WorkflowDefinition): Promise<void> {
   }
 }
 
+// ---------------- 工作流编辑（P1）----------------
+
+/** 节点类型元数据：与 backend NODE_DEFINITIONS 对齐，前端用来渲染添节点下拉和内联编辑表单 */
+const FLOW_NODE_TYPES = [
+  { type: 'kb_search', label: '本地知识库检索', fields: [{ key: 'query', label: '检索问题' }, { key: 'topK', label: '返回条数（可选）' }] },
+  { type: 'web_search', label: '联网搜索', fields: [{ key: 'query', label: '搜索关键词' }, { key: 'limit', label: '返回条数（可选）' }] },
+  { type: 'fetch_url', label: '读取网页', fields: [{ key: 'url', label: '网页地址' }] },
+  { type: 'llm', label: '模型分析', fields: [{ key: 'prompt', label: '提示词' }, { key: 'temperature', label: '温度（可选）' }] },
+  { type: 'report', label: '生成报告', fields: [{ key: 'title', label: '报告标题' }, { key: 'instruction', label: '额外要求（可选）' }] }
+]
+
+const flowEditing = ref(false)
+const flowDraft = ref<WorkflowDefinition | null>(null)
+const flowEditError = ref('')
+
+function startFlowEdit(workflow: WorkflowDefinition): void {
+  flowDraft.value = {
+    ...workflow,
+    steps: workflow.steps.map((step) => ({ ...step, args: { ...step.args } })),
+    variables: workflow.variables.map((v) => ({ ...v }))
+  }
+  flowEditing.value = true
+  flowEditError.value = ''
+}
+
+function duplicateAsNew(workflow: WorkflowDefinition): void {
+  flowDraft.value = {
+    ...workflow,
+    id: '',  // 空 id 让 engine.ts 自动生成
+    builtin: false,
+    name: `${workflow.name} · 副本`,
+    steps: workflow.steps.map((step) => ({ ...step, args: { ...step.args } })),
+    variables: workflow.variables.map((v) => ({ ...v })),
+    createdAt: 0,
+    updatedAt: 0
+  }
+  flowEditing.value = true
+  flowEditError.value = ''
+}
+
+function cancelFlowEdit(): void {
+  flowEditing.value = false
+  flowDraft.value = null
+  flowEditError.value = ''
+}
+
+function addFlowStepToDraft(type: string): void {
+  if (!flowDraft.value) return
+  const nodeType = FLOW_NODE_TYPES.find((n) => n.type === type)
+  if (!nodeType) return
+  const idx = flowDraft.value.steps.length + 1
+  const args: Record<string, string> = {}
+  for (const field of nodeType.fields) {
+    args[field.key] = ''
+  }
+  flowDraft.value.steps.push({
+    id: `s${idx}`,
+    type,
+    label: nodeType.label,
+    args,
+    enabled: true,
+    onEmpty: 'skip'
+  })
+}
+
+function removeFlowStepFromDraft(index: number): void {
+  if (!flowDraft.value) return
+  flowDraft.value.steps.splice(index, 1)
+}
+
+function moveFlowStepInDraft(index: number, direction: -1 | 1): void {
+  if (!flowDraft.value) return
+  const steps = flowDraft.value.steps
+  const target = index + direction
+  if (target < 0 || target >= steps.length) return
+  const temp = steps[index]
+  steps[index] = steps[target]
+  steps[target] = temp
+}
+
+async function saveFlowDraft(): Promise<void> {
+  if (!flowDraft.value) return
+  flowEditError.value = ''
+  const draft = flowDraft.value
+  if (!draft.name.trim()) {
+    flowEditError.value = '名称必填'
+    return
+  }
+  if (draft.steps.length === 0) {
+    flowEditError.value = '至少需要一个步骤'
+    return
+  }
+  try {
+    const result = await api.flowSave(draft)
+    if (!result.ok) {
+      flowEditError.value = result.message || '保存失败'
+      return
+    }
+    await refreshFlows()
+    flowEditing.value = false
+    flowDraft.value = null
+    if (result.workflow) selectFlow(result.workflow)
+  } catch (error) {
+    flowEditError.value = error instanceof Error ? error.message : '保存失败'
+  }
+}
+
 /** 查看历史运行的步骤状态（只读），再点一次收起 */
 function openRunDetail(run: WorkflowRun): void {
   flowDetailRun.value = flowDetailRun.value?.id === run.id ? null : run
@@ -2874,11 +2981,25 @@ onBeforeUnmount(() => {
               <div v-if="flowError" class="rag-error">{{ flowError }}</div>
             </div>
 
-            <template v-else>
+            <template v-else-if="!flowEditing">
               <div class="flow-title-row">
                 <span class="flow-title">{{ flowSelected.name }}</span>
                 <span v-if="flowSelected.builtin" class="flow-badge">模板</span>
                 <span class="flow-step-count">{{ flowSteps.length }} 步</span>
+                <div class="flow-edit-actions">
+                  <button
+                    v-if="flowSelected.builtin"
+                    class="flow-edit-btn"
+                    :disabled="flowRunning"
+                    @click="duplicateAsNew(flowSelected)"
+                  >另存为 → 编辑</button>
+                  <button
+                    v-else
+                    class="flow-edit-btn"
+                    :disabled="flowRunning"
+                    @click="startFlowEdit(flowSelected)"
+                  >编辑</button>
+                </div>
               </div>
               <p class="flow-desc flow-desc-line">{{ flowSelected.description }}</p>
 
@@ -2955,6 +3076,67 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <pre class="flow-result-body">{{ flowResultText }}</pre>
+              </div>
+            </template>
+
+            <template v-else>
+              <!-- 工作流编辑视图（P1） -->
+              <div v-if="flowDraft" class="flow-edit">
+                <div class="flow-edit-head">
+                  <input v-model="flowDraft.name" type="text" class="flow-edit-name" placeholder="工作流名称" />
+                  <button class="flow-edit-save" @click="saveFlowDraft">保存</button>
+                  <button class="flow-edit-cancel" @click="cancelFlowEdit">取消</button>
+                </div>
+                <textarea v-model="flowDraft.description" class="flow-edit-desc" placeholder="描述这个工作流做什么（可选）" />
+
+                <div class="flow-edit-section">
+                  <div class="flow-edit-section-head">
+                    <span>参数变量</span>
+                    <button class="flow-edit-add" @click="flowDraft.variables.push({ key: '', label: '', placeholder: '', required: false })">+ 添加</button>
+                  </div>
+                  <div v-if="flowDraft.variables.length === 0" class="flow-edit-hint">这个工作流没有输入参数。</div>
+                  <div v-for="(variable, idx) in flowDraft.variables" :key="idx" class="flow-edit-var">
+                    <input v-model="variable.key" type="text" placeholder="变量名" :disabled="flowRunning" />
+                    <input v-model="variable.label" type="text" placeholder="显示名" />
+                    <input v-model="variable.placeholder" type="text" placeholder="占位提示（可选）" />
+                    <label class="flow-edit-req"><input type="checkbox" v-model="variable.required" /> 必填</label>
+                    <button class="flow-edit-del" @click="flowDraft.variables.splice(idx, 1)">×</button>
+                  </div>
+                </div>
+
+                <div class="flow-edit-section">
+                  <div class="flow-edit-section-head">
+                    <span>执行步骤</span>
+                    <select class="flow-edit-add-select" @change="addFlowStepToDraft(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
+                      <option value="">+ 添加步骤…</option>
+                      <option v-for="node in FLOW_NODE_TYPES" :key="node.type" :value="node.type">{{ node.label }}</option>
+                    </select>
+                  </div>
+                  <div v-if="flowDraft.steps.length === 0" class="flow-edit-hint">至少添加一个步骤。</div>
+                  <div v-for="(step, idx) in flowDraft.steps" :key="step.id" class="flow-edit-step">
+                    <div class="flow-edit-step-head">
+                      <span class="flow-edit-step-num">{{ idx + 1 }}</span>
+                      <span class="flow-edit-step-type">{{ FLOW_NODE_TYPES.find(n => n.type === step.type)?.label || step.type }}</span>
+                      <button class="flow-edit-move" :disabled="idx === 0" @click="moveFlowStepInDraft(idx, -1)">↑</button>
+                      <button class="flow-edit-move" :disabled="idx === flowDraft.steps.length - 1" @click="moveFlowStepInDraft(idx, 1)">↓</button>
+                      <button class="flow-edit-del" @click="removeFlowStepFromDraft(idx)">×</button>
+                    </div>
+                    <div class="flow-edit-step-fields">
+                      <div v-for="field in (FLOW_NODE_TYPES.find(n => n.type === step.type)?.fields || [])" :key="field.key" class="flow-edit-field">
+                        <label>{{ field.label }}</label>
+                        <textarea
+                          v-if="field.key === 'prompt' || field.key === 'instruction' || field.key === 'query'"
+                          v-model="step.args[field.key]"
+                          :placeholder="'{{变量名}} ' + field.key + ' 的内容…'"
+                          rows="2"
+                        />
+                        <input v-else v-model="step.args[field.key]" type="text" :placeholder="field.key" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="flowEditError" class="rag-error">{{ flowEditError }}</div>
               </div>
             </template>
           </div>
@@ -4985,6 +5167,114 @@ onBeforeUnmount(() => {
   padding-right: 4px;
   overflow: auto;
 }
+
+/* ---- 工作流编辑（P1）---- */
+.flow-edit { display: flex; flex-direction: column; gap: 10px; padding: 2px 0; }
+.flow-edit-head { display: flex; align-items: center; gap: 6px; }
+.flow-edit-name {
+  flex: 1; padding: 6px 8px; font-size: 12px;
+  color: var(--text); background: rgba(255,255,255,0.03);
+  border: 1px solid var(--line); border-radius: 5px; outline: none;
+}
+.flow-edit-name:focus { border-color: var(--line-2); }
+.flow-edit-desc {
+  width: 100%; padding: 6px 8px; font-size: 10.5px; resize: vertical; min-height: 36px;
+  color: var(--text); background: rgba(255,255,255,0.03);
+  border: 1px solid var(--line); border-radius: 5px; outline: none;
+  font-family: inherit; box-sizing: border-box;
+}
+.flow-edit-save, .flow-edit-cancel {
+  padding: 5px 12px; font-size: 10.5px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--line);
+}
+.flow-edit-save {
+  color: #0d1117; background: var(--lime); border-color: var(--lime);
+}
+.flow-edit-save:hover { filter: brightness(1.08); }
+.flow-edit-cancel { color: var(--text-2); background: transparent; }
+.flow-edit-cancel:hover { background: rgba(255,255,255,0.05); }
+
+.flow-edit-section {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 9px 10px; background: rgba(255,255,255,0.02);
+  border: 1px solid var(--line); border-radius: 7px;
+}
+.flow-edit-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 10.5px; color: var(--text-3);
+}
+.flow-edit-add, .flow-edit-add-select {
+  padding: 2px 8px; font-size: 10px; color: var(--text-2);
+  background: rgba(255,255,255,0.05); border: 1px solid var(--line);
+  border-radius: 4px; cursor: pointer;
+}
+.flow-edit-add:hover, .flow-edit-add-select:hover { color: var(--text); }
+.flow-edit-add-select { padding: 2px 6px; font-size: 10px; }
+
+.flow-edit-hint { font-size: 10px; color: var(--text-3); padding: 2px 0; }
+
+.flow-edit-var {
+  display: flex; gap: 5px; align-items: center;
+}
+.flow-edit-var input[type="text"] {
+  padding: 4px 6px; font-size: 10.5px; color: var(--text);
+  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
+  border-radius: 4px; outline: none;
+}
+.flow-edit-var input:first-child { flex: 0 0 100px; }
+.flow-edit-var input:nth-child(2) { flex: 0 0 80px; }
+.flow-edit-var input:nth-child(3) { flex: 1; }
+.flow-edit-req { font-size: 10px; color: var(--text-3); white-space: nowrap; display: flex; align-items: center; gap: 2px; }
+
+.flow-edit-step {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; background: rgba(255,255,255,0.025);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.flow-edit-step-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px;
+}
+.flow-edit-step-num {
+  width: 18px; height: 18px; line-height: 18px; text-align: center;
+  font-size: 10px; font-weight: 600;
+  color: var(--text-2); background: rgba(255,255,255,0.06); border-radius: 3px;
+}
+.flow-edit-step-type { font-weight: 600; color: var(--text); flex: 1; }
+.flow-edit-move {
+  padding: 1px 5px; font-size: 10px; color: var(--text-3);
+  background: transparent; border: 1px solid var(--line); border-radius: 3px;
+  cursor: pointer;
+}
+.flow-edit-move:hover:not(:disabled) { color: var(--text); border-color: var(--line-2); }
+.flow-edit-move:disabled { opacity: 0.35; cursor: default; }
+.flow-edit-del {
+  width: 18px; height: 18px; line-height: 16px; text-align: center;
+  font-size: 12px; color: var(--text-3); background: transparent;
+  border: 1px solid transparent; border-radius: 3px; cursor: pointer;
+}
+.flow-edit-del:hover { color: #c06a6a; border-color: rgba(192,106,106,0.4); }
+
+.flow-edit-step-fields {
+  display: flex; flex-direction: column; gap: 4px;
+  padding-left: 24px;
+}
+.flow-edit-field { display: flex; flex-direction: column; gap: 2px; }
+.flow-edit-field > label { font-size: 10px; color: var(--text-3); }
+.flow-edit-field input, .flow-edit-field textarea {
+  padding: 4px 6px; font-size: 10.5px; color: var(--text);
+  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
+  border-radius: 4px; outline: none; font-family: inherit; resize: vertical;
+}
+
+.flow-edit-actions { display: flex; gap: 6px; margin-left: auto; }
+.flow-edit-btn {
+  padding: 2px 9px; font-size: 10px; color: var(--text-2);
+  background: rgba(255,255,255,0.04); border: 1px solid var(--line);
+  border-radius: 4px; cursor: pointer;
+}
+.flow-edit-btn:hover:not(:disabled) { color: var(--text); border-color: var(--line-2); background: rgba(255,255,255,0.07); }
+.flow-edit-btn:disabled { opacity: 0.35; cursor: default; }
 
 .flow-title-row {
   display: flex;
