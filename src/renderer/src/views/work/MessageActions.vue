@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 消息操作行：复制 / 分支 / 修改（仅用户消息）/ 删除，助手消息额外保留重试
+// 消息操作行：复制 / 分支 / 修改（仅用户消息）/ 删除 / 重试（仅助手消息）/ 存为工作流（助手消息有工具轨迹时）
 // 按钮默认隐藏，由父级 .msg 的 hover / focus-within 控制显示
 import { onBeforeUnmount, ref } from 'vue'
 
@@ -9,6 +9,8 @@ defineProps<{
   disabled?: boolean
   /** 正在重新生成，仅助手消息使用 */
   retrying?: boolean
+  /** 助手消息是否有工具调用轨迹（可冻结石工作流） */
+  hasTools?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   edit: []
   delete: []
   retry: []
+  saveAsFlow: []
 }>()
 
 // 复制成功提示只在本组件内短暂展示，1.2 秒后自动还原
@@ -107,6 +110,21 @@ onBeforeUnmount(() => {
         <path d="M20 4v7h-7" />
       </svg>
       <span v-if="retrying" class="act-text">重试中</span>
+    </button>
+
+    <button
+      v-if="role === 'assistant' && hasTools"
+      class="act-btn"
+      :disabled="disabled"
+      title="把这次 Agent 调用轨迹冻结为可复用的工作流"
+      @click="emit('saveAsFlow')"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4h10l6 6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
+        <path d="M14 4v6h6" />
+        <path d="M8 14h8" />
+        <path d="M12 11v6" />
+      </svg>
     </button>
   </div>
 </template>

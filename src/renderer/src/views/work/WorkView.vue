@@ -1815,6 +1815,57 @@ async function saveFlowDraft(): Promise<void> {
   }
 }
 
+// ---------------- P2: Agent 轨迹冻结为工作流 ----------------
+
+/** 把助手消息里的工具调用轨迹转成 WorkflowDefinition 并保存 */
+async function saveMessageAsFlow(message: WorkMessage): Promise<void> {
+  const tools = message.tools ?? []
+  if (tools.length === 0) return
+
+  const flowName = prompt('为这个工作流起个名字', `Agent 轨迹 · ${new Date().toLocaleString()}`)
+  if (!flowName) return
+
+  const steps = tools.map((toolCall, idx) => {
+    const toolId = toolCall.name || `unknown_${idx + 1}`
+    const toolArgs = toolCall.args ?? {}
+    return {
+      id: `s${idx + 1}`,
+      type: toolId,
+      label: toolId,
+      args: Object.fromEntries(
+        Object.entries(toolArgs).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)])
+      ),
+      enabled: true,
+      onEmpty: 'skip' as const
+    }
+  })
+
+  const newFlow: WorkflowDefinition = {
+    id: '',
+    version: 1,
+    builtin: false,
+    name: flowName.trim(),
+    description: `由 Agent 自动轨迹生成，包含 ${steps.length} 步。可在编辑模式下调整。`,
+    variables: [],
+    steps,
+    createdAt: 0,
+    updatedAt: 0
+  }
+
+  try {
+    const result = await api.flowSave(newFlow)
+    if (!result.ok) {
+      alert(result.message || '保存工作流失败')
+      return
+    }
+    await refreshFlows()
+    if (result.workflow) selectFlow(result.workflow)
+    alert(`已保存为「${newFlow.name}」，可在工作流面板查看和编辑。`)
+  } catch (error) {
+    alert(error instanceof Error ? error.message : '保存工作流失败')
+  }
+}
+
 /** 查看历史运行的步骤状态（只读），再点一次收起 */
 function openRunDetail(run: WorkflowRun): void {
   flowDetailRun.value = flowDetailRun.value?.id === run.id ? null : run
@@ -2370,10 +2421,12 @@ onBeforeUnmount(() => {
                 role="assistant"
                 :disabled="busy"
                 :retrying="busy"
+                :hasTools="(message.tools?.length ?? 0) > 0"
                 @copy="copyMessage(message)"
                 @branch="branchMessage(message)"
                 @delete="deleteMessage(message)"
                 @retry="retryMessage(message)"
+                @saveAsFlow="saveMessageAsFlow(message)"
               />
             </div>
           </div>
