@@ -58,6 +58,141 @@ const settingsError = ref('')
 const keyword = ref('')
 const panelOpen = ref(true)
 
+// ---------------- 三栏宽度拖拽 ----------------
+// 左栏与右栏宽度由 CSS 变量控制，拖动两侧分隔条调整，双击拖拽条恢复默认
+const SESSION_DEFAULT = 236
+const INSPECTOR_DEFAULT = 300
+const SESSION_MIN = 180
+const SESSION_MAX = 420
+const INSPECTOR_MIN = 280
+const INSPECTOR_MAX = 640
+const MAIN_MIN = 360
+const HANDLE_WIDTH = 5
+const SESSION_WIDTH_KEY = 'work.session-width'
+const INSPECTOR_WIDTH_KEY = 'work.inspector-width'
+
+const workEl = ref<HTMLElement | null>(null)
+const workWidth = ref(0)
+const sessionWidth = ref(
+  readStoredWidth(SESSION_WIDTH_KEY, SESSION_DEFAULT, SESSION_MIN, SESSION_MAX)
+)
+const inspectorWidth = ref(
+  readStoredWidth(INSPECTOR_WIDTH_KEY, INSPECTOR_DEFAULT, INSPECTOR_MIN, INSPECTOR_MAX)
+)
+const resizing = ref<'' | 'session' | 'inspector'>('')
+const resizeStart = { x: 0, width: 0 }
+let activeResizeCleanup: (() => void) | undefined
+let workObserver: ResizeObserver | undefined
+
+/** 读取持久化宽度：内容缺失或损坏时回退默认，超出范围收敛到合法区间 */
+function readStoredWidth(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw === null || raw.trim() === '') return fallback
+    const value = Number(raw)
+    if (!Number.isFinite(value)) return fallback
+    return Math.round(clampInput(value, min, max, fallback))
+  } catch {
+    return fallback
+  }
+}
+
+/** 两侧拖拽条总宽：右侧面板收起时只剩左侧一条 */
+function handleTotal(): number {
+  return panelOpen.value ? HANDLE_WIDTH * 2 : HANDLE_WIDTH
+}
+
+/** 左栏动态上限：容器不足时收紧，保证中间对话区至少保留 360px */
+function sessionLimit(): number {
+  if (!workWidth.value) return SESSION_MAX
+  const inspector = panelOpen.value
+    ? clampInput(inspectorWidth.value, INSPECTOR_MIN, INSPECTOR_MAX, INSPECTOR_DEFAULT)
+    : 0
+  const dynamic = workWidth.value - handleTotal() - MAIN_MIN - inspector
+  return Math.max(SESSION_MIN, Math.min(SESSION_MAX, dynamic))
+}
+
+/** 右栏动态上限：左栏越宽，右栏可用的最大宽度越小 */
+function inspectorLimit(): number {
+  if (!workWidth.value) return INSPECTOR_MAX
+  const session = clampInput(sessionWidth.value, SESSION_MIN, SESSION_MAX, SESSION_DEFAULT)
+  const dynamic = workWidth.value - handleTotal() - MAIN_MIN - session
+  return Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, dynamic))
+}
+
+/** 实际渲染宽度：持久化值收敛到当前容器允许的范围 */
+function renderedSession(): number {
+  return clampInput(sessionWidth.value, SESSION_MIN, sessionLimit(), SESSION_DEFAULT)
+}
+
+function renderedInspector(): number {
+  return clampInput(inspectorWidth.value, INSPECTOR_MIN, inspectorLimit(), INSPECTOR_DEFAULT)
+}
+
+const workStyle = computed<Record<string, string>>(() => ({
+  '--session-w': `${Math.round(renderedSession())}px`,
+  '--inspector-w': `${Math.round(renderedInspector())}px`
+}))
+
+function persistWidths(): void {
+  try {
+    window.localStorage.setItem(SESSION_WIDTH_KEY, String(Math.round(sessionWidth.value)))
+    window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(Math.round(inspectorWidth.value)))
+  } catch {
+    // 本地存储不可用时只在本次运行内生效
+  }
+}
+
+/** 开始拖动：在 document 上监听移动与抬起，避免指针移出拖拽条后中断 */
+function startResize(kind: 'session' | 'inspector', event: PointerEvent): void {
+  if (event.button !== 0) return
+  event.preventDefault()
+  activeResizeCleanup?.()
+  resizing.value = kind
+  resizeStart.x = event.clientX
+  resizeStart.width = kind === 'session' ? renderedSession() : renderedInspector()
+
+  const onMove = (moveEvent: PointerEvent): void => {
+    const delta = moveEvent.clientX - resizeStart.x
+    if (kind === 'session') {
+      // 右拖增大会话栏，左拖减小
+      sessionWidth.value = Math.round(
+        clampInput(resizeStart.width + delta, SESSION_MIN, sessionLimit(), SESSION_DEFAULT)
+      )
+    } else {
+      // 左拖增大右侧面板，右拖减小
+      inspectorWidth.value = Math.round(
+        clampInput(resizeStart.width - delta, INSPECTOR_MIN, inspectorLimit(), INSPECTOR_DEFAULT)
+      )
+    }
+  }
+  const onEnd = (): void => {
+    activeResizeCleanup?.()
+    activeResizeCleanup = undefined
+    resizing.value = ''
+    persistWidths()
+  }
+  const cleanup = (): void => {
+    document.removeEventListener('pointermove', onMove)
+    document.removeEventListener('pointerup', onEnd)
+    document.removeEventListener('pointercancel', onEnd)
+  }
+  activeResizeCleanup = cleanup
+  document.addEventListener('pointermove', onMove)
+  document.addEventListener('pointerup', onEnd)
+  document.addEventListener('pointercancel', onEnd)
+}
+
+/** 双击拖拽条恢复该侧默认宽度 */
+function resetWidth(kind: 'session' | 'inspector'): void {
+  if (kind === 'session') {
+    sessionWidth.value = SESSION_DEFAULT
+  } else {
+    inspectorWidth.value = INSPECTOR_DEFAULT
+  }
+  persistWidths()
+}
+
 // 右侧面板：注册表驱动，布局（打开的 id 与当前激活 id）持久化到 localStorage
 const PANEL_LAYOUT_KEY = 'work-panel-layout'
 const DEFAULT_PANEL_IDS = ['sources', 'trace', 'knowledge', 'search', 'artifacts']
@@ -1658,6 +1793,16 @@ onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('click', onWindowClick)
 
+  // 记录三栏容器的实时宽度，窗口变化时按容器收紧两侧上限
+  if (workEl.value) {
+    workWidth.value = workEl.value.clientWidth
+    workObserver = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (entry) workWidth.value = entry.contentRect.width
+    })
+    workObserver.observe(workEl.value)
+  }
+
   // 能力元数据加载失败时面板给出提示，不影响会话与对话
   api
     .listCapabilities()
@@ -1702,6 +1847,10 @@ onBeforeUnmount(() => {
   offFlowDone?.()
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('click', onWindowClick)
+  activeResizeCleanup?.()
+  activeResizeCleanup = undefined
+  workObserver?.disconnect()
+  workObserver = undefined
   if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
   if (deleteTimer !== undefined) window.clearTimeout(deleteTimer)
   if (persistTimer !== undefined) window.clearTimeout(persistTimer)
@@ -1714,7 +1863,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="work" :class="{ 'is-inspector-hidden': !panelOpen }">
+  <section
+    ref="workEl"
+    class="work"
+    :class="{ 'is-inspector-hidden': !panelOpen, 'is-resizing': Boolean(resizing) }"
+    :style="workStyle"
+  >
     <!-- 左：会话列表 -->
     <aside class="rail">
       <div class="rail-head">
@@ -1775,6 +1929,17 @@ onBeforeUnmount(() => {
         <span v-else>未配置 API Key</span>
       </div>
     </aside>
+
+    <!-- 左分隔条：拖动调整会话列表宽度，双击恢复默认 -->
+    <div
+      class="resize-handle is-session"
+      :class="{ 'is-active': resizing === 'session' }"
+      role="separator"
+      aria-orientation="vertical"
+      title="拖动调整会话列表宽度，双击恢复默认"
+      @pointerdown="startResize('session', $event)"
+      @dblclick="resetWidth('session')"
+    />
 
     <!-- 中：对话流 -->
     <section class="main">
@@ -1981,6 +2146,18 @@ onBeforeUnmount(() => {
         </div>
       </footer>
     </section>
+
+    <!-- 右分隔条：拖动调整右侧面板宽度，面板收起时不显示 -->
+    <div
+      v-if="panelOpen"
+      class="resize-handle is-inspector"
+      :class="{ 'is-active': resizing === 'inspector' }"
+      role="separator"
+      aria-orientation="vertical"
+      title="拖动调整右侧面板宽度，双击恢复默认"
+      @pointerdown="startResize('inspector', $event)"
+      @dblclick="resetWidth('inspector')"
+    />
 
     <!-- 右：注册表驱动的面板容器 -->
     <aside v-if="panelOpen" class="inspector">
@@ -2669,22 +2846,55 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .work {
-  display: grid;
-  grid-template-columns: 236px minmax(0, 1fr) 300px;
+  --session-w: 236px;
+  --inspector-w: 300px;
+
+  display: flex;
   width: 100%;
   height: 100%;
   min-height: 0;
 }
 
-.work.is-inspector-hidden {
-  grid-template-columns: 236px minmax(0, 1fr);
+/* 拖动分隔条期间禁用选中，避免选中文字 */
+.work.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/* ---------------- 分隔条 ---------------- */
+
+.resize-handle {
+  position: relative;
+  flex: 0 0 5px;
+  width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.16s ease;
+}
+
+.resize-handle:hover::after,
+.resize-handle.is-active::after {
+  background: var(--accent);
 }
 
 /* ---------------- 左栏 ---------------- */
 
 .rail {
   display: flex;
+  flex: 0 0 var(--session-w);
   flex-direction: column;
+  width: var(--session-w);
   min-height: 0;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 42%), var(--bg-1);
   border-right: 1px solid var(--line);
@@ -2892,6 +3102,7 @@ onBeforeUnmount(() => {
 
 .main {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
@@ -3653,7 +3864,9 @@ onBeforeUnmount(() => {
 
 .inspector {
   display: flex;
+  flex: 0 0 var(--inspector-w);
   flex-direction: column;
+  width: var(--inspector-w);
   min-height: 0;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%), var(--bg-1);
   border-left: 1px solid var(--line);
@@ -4865,23 +5078,15 @@ onBeforeUnmount(() => {
 /* ---------------- 窄窗口 ---------------- */
 
 @media (max-width: 1180px) {
-  .work,
-  .work.is-inspector-hidden {
-    grid-template-columns: 208px minmax(0, 1fr);
-  }
-
-  .inspector {
+  .inspector,
+  .resize-handle.is-inspector {
     display: none;
   }
 }
 
 @media (max-width: 900px) {
-  .work,
-  .work.is-inspector-hidden {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rail {
+  .rail,
+  .resize-handle.is-session {
     display: none;
   }
 
