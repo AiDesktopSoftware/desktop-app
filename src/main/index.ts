@@ -12,12 +12,19 @@ function createWindow(): void {
     autoHideMenuBar: true,
     title: 'AI 多源信息采集与研究助手',
     // 隐藏原生标题栏，窗口按钮以深色浮层形式叠加在自绘标题栏上
+    // hover 效果对齐 Trae：最小化/最大化浅灰背景，关闭按钮红色填充
     titleBarStyle: 'hidden',
     titleBarOverlay: {
       color: '#10131a',
       symbolColor: '#98a1b0',
+      hoverColor: 'rgba(255, 255, 255, 0.08)',
+      hoverSymbolColor: '#ffffff',
+      closeColor: '#10131a',
+      closeSymbolColor: '#98a1b0',
+      closeHoverColor: '#e81123',
+      closeHoverSymbolColor: '#ffffff',
       height: 40
-    },
+    } as Electron.TitleBarOverlay,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
