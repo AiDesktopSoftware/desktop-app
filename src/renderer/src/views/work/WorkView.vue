@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { PANELS, type PanelDefinition } from './panels/registry'
 import type {
   KbDocument,
-  RagChunk,
   RagProviderId,
-  RagResult,
   RunStep,
   WorkCapability,
   WorkCapabilityPermission,
@@ -58,15 +57,23 @@ const settingsError = ref('')
 
 const keyword = ref('')
 const panelOpen = ref(true)
-const tab = ref<'evidence' | 'artifacts'>('evidence')
 
-// 知识库检索只作为当前视图状态，不写入会话持久化
-const ragQuery = ref('')
-const ragProvider = ref<RagProviderId>('local')
-const ragLoading = ref(false)
-const ragResult = ref<RagResult | null>(null)
-const ragError = ref('')
-let ragRequestToken = 0
+// 右侧面板：注册表驱动，布局（打开的 id 与当前激活 id）持久化到 localStorage
+const PANEL_LAYOUT_KEY = 'work-panel-layout'
+const DEFAULT_PANEL_IDS = ['sources', 'trace', 'knowledge', 'search', 'artifacts']
+const PANEL_IDS = new Set(PANELS.map((panel) => panel.id))
+const storedPanelLayout = loadPanelLayout()
+const openPanelIds = ref<string[]>(storedPanelLayout.open)
+const activePanelId = ref(storedPanelLayout.active)
+const panelMenuOpen = ref(false)
+const panelMenuEl = ref<HTMLElement | null>(null)
+
+// 检索来源下拉选项：注册顺序即展示顺序
+const RAG_PROVIDER_OPTIONS: { id: RagProviderId; label: string }[] = [
+  { id: 'local', label: '本地库' },
+  { id: 'cloud', label: '云端公共库' },
+  { id: 'both', label: '双路合并' }
+]
 
 // 本地知识库：资料列表与导入/删除状态，只保留在当前视图，不写入会话
 const kbDocuments = ref<KbDocument[]>([])
@@ -213,10 +220,6 @@ const currentTools = computed<WorkToolCall[]>(() => {
   return []
 })
 
-const doneToolCount = computed(
-  () => currentTools.value.filter((tool) => tool.status === 'done').length
-)
-
 /** 右栏证据链：当前会话最后一条带来源的助手消息 */
 const currentEvidence = computed<WorkEvidenceItem[]>(() => {
   const messages = activeMessages.value
@@ -227,25 +230,129 @@ const currentEvidence = computed<WorkEvidenceItem[]>(() => {
   return []
 })
 
+/** 检索面板的默认来源：模式优先，其次全局偏好 */
+const searchDefaultProvider = computed<RagProviderId>(
+  () => currentMode.value?.ragProvider ?? prefs.value.defaultProvider
+)
+
+/** 检索面板的默认条数：模式优先，其次全局偏好 */
+const searchDefaultTopK = computed(() => currentMode.value?.topK ?? prefs.value.topK)
+
+/** 已打开的面板，始终按注册顺序排列 */
+const openPanels = computed<PanelDefinition[]>(() =>
+  PANELS.filter((panel) => openPanelIds.value.includes(panel.id))
+)
+
+/** 未打开的面板，供「+」菜单选择 */
+const closedPanels = computed<PanelDefinition[]>(() =>
+  PANELS.filter((panel) => !openPanelIds.value.includes(panel.id))
+)
+
+const activePanelDefinition = computed<PanelDefinition>(() => {
+  return PANELS.find((panel) => panel.id === activePanelId.value) ?? PANELS[0]
+})
+
+/** 当前激活面板需要的 props，容器不感知各面板内部状态 */
+const activePanelProps = computed<Record<string, unknown>>(() => {
+  switch (activePanelId.value) {
+    case 'sources':
+      return { items: currentEvidence.value }
+    case 'trace':
+      return { tools: currentTools.value, labels: capabilityLabels.value }
+    case 'knowledge':
+      return {
+        documents: kbDocuments.value,
+        chunkCount: kbChunkCount.value,
+        importing: kbImporting.value,
+        notice: kbNotice.value,
+        error: kbError.value
+      }
+    case 'search':
+      return {
+        defaultProvider: searchDefaultProvider.value,
+        defaultTopK: searchDefaultTopK.value,
+        providers: RAG_PROVIDER_OPTIONS,
+        sessionKey: activeSessionId.value
+      }
+    case 'mode':
+      return { mode: currentMode.value, labels: capabilityLabels.value }
+    default:
+      return {}
+  }
+})
+
+/** 读取面板布局，非法或损坏时回到默认值 */
+function loadPanelLayout(): { open: string[]; active: string } {
+  try {
+    const raw = window.localStorage.getItem(PANEL_LAYOUT_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as { open?: unknown; active?: unknown }
+      const open = Array.isArray(parsed.open)
+        ? parsed.open.filter((id): id is string => typeof id === 'string' && PANEL_IDS.has(id))
+        : []
+      if (open.length > 0) {
+        const active =
+          typeof parsed.active === 'string' && open.includes(parsed.active)
+            ? parsed.active
+            : open[0]
+        return { open, active }
+      }
+    }
+  } catch {
+    // 本地存储不可用或内容损坏时使用默认布局
+  }
+  return { open: [...DEFAULT_PANEL_IDS], active: DEFAULT_PANEL_IDS[0] }
+}
+
+function persistPanelLayout(): void {
+  try {
+    window.localStorage.setItem(
+      PANEL_LAYOUT_KEY,
+      JSON.stringify({ open: openPanelIds.value, active: activePanelId.value })
+    )
+  } catch {
+    // 本地存储不可用时只在本次运行内生效
+  }
+}
+
+watch([openPanelIds, activePanelId], persistPanelLayout, { deep: true })
+
+function activatePanel(id: string): void {
+  if (!PANEL_IDS.has(id)) return
+  activePanelId.value = id
+  panelMenuOpen.value = false
+}
+
+/** 关闭标签；pinnable 与 closable=false 的面板不响应 */
+function closePanel(id: string): void {
+  const panel = PANELS.find((item) => item.id === id)
+  if (!panel || panel.pinnable || panel.closable === false) return
+  const index = openPanelIds.value.indexOf(id)
+  if (index < 0) return
+  openPanelIds.value = openPanelIds.value.filter((item) => item !== id)
+  if (activePanelId.value === id) {
+    activePanelId.value = openPanelIds.value[0] ?? DEFAULT_PANEL_IDS[0]
+  }
+}
+
+/** 从「+」菜单加入面板并激活 */
+function addPanel(id: string): void {
+  if (!PANEL_IDS.has(id)) return
+  if (!openPanelIds.value.includes(id)) openPanelIds.value = [...openPanelIds.value, id]
+  activePanelId.value = id
+  panelMenuOpen.value = false
+}
+
+function togglePanelMenu(): void {
+  if (!panelMenuOpen.value && modeMenuOpen.value) modeMenuOpen.value = false
+  panelMenuOpen.value = !panelMenuOpen.value
+}
+
 const capResultText = computed(() => {
   if (!capResult.value) return ''
   const content = capResult.value.content
   return content.length > 2000 ? `${content.slice(0, 2000)}\n……` : content
 })
-
-function evidenceDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '')
-  } catch {
-    return url
-  }
-}
-
-function ragOrigin(chunk: RagChunk): string {
-  if (chunk.source.url) return evidenceDomain(chunk.source.url)
-  if (chunk.source.path) return fileName(chunk.source.path)
-  return '来源未标注'
-}
 
 /** 从完整路径中取文件名，用于窄栏里的来源展示 */
 function fileName(path: string): string {
@@ -309,50 +416,6 @@ async function removeKb(docId: string): Promise<void> {
     kbError.value = error instanceof Error ? error.message : '删除失败'
   }
   await refreshKb()
-}
-
-/** 切换会话或新建会话时清空检索视图，并让仍在途的请求失效 */
-function resetRagSearch(): void {
-  ragRequestToken += 1
-  ragQuery.value = ''
-  ragProvider.value = modeProvider()
-  ragLoading.value = false
-  ragResult.value = null
-  ragError.value = ''
-}
-
-function onRagEnter(event: KeyboardEvent): void {
-  if (event.isComposing) return
-  event.preventDefault()
-  void searchKnowledge()
-}
-
-async function searchKnowledge(): Promise<void> {
-  const text = ragQuery.value.trim()
-  if (!text || ragLoading.value) return
-  const token = ++ragRequestToken
-  ragLoading.value = true
-  ragResult.value = null
-  ragError.value = ''
-  try {
-    const result = await api.searchRag({
-      query: text,
-      provider: ragProvider.value,
-      // 模式优先，其次全局偏好
-      topK: currentMode.value?.topK ?? prefs.value.topK
-    })
-    if (token !== ragRequestToken) return
-    if (result.ok) {
-      ragResult.value = result
-    } else {
-      ragError.value = result.message || '检索失败'
-    }
-  } catch (error) {
-    if (token !== ragRequestToken) return
-    ragError.value = error instanceof Error ? error.message : '检索失败'
-  } finally {
-    if (token === ragRequestToken) ragLoading.value = false
-  }
 }
 
 const collapsedTools = ref<Record<string, boolean>>({})
@@ -742,7 +805,6 @@ function newSession(): void {
   activeSessionId.value = ''
   draft.value = ''
   pendingDeleteId.value = ''
-  resetRagSearch()
   scrollToBottom()
   void nextTick(() => textareaEl.value?.focus())
 }
@@ -751,7 +813,6 @@ function selectSession(id: string): void {
   if (activeSessionId.value === id) return
   activeSessionId.value = id
   pendingDeleteId.value = ''
-  resetRagSearch()
   scrollToBottom()
 }
 
@@ -785,7 +846,6 @@ function confirmDelete(id: string): void {
   if (activeSessionId.value === id) {
     const next = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0]
     activeSessionId.value = next?.id ?? ''
-    resetRagSearch()
   }
   void persist()
 }
@@ -800,15 +860,6 @@ function storedModeId(): string {
   }
 }
 
-/** 检索来源：模式优先，其次全局偏好 */
-function modeProvider(): RagProviderId {
-  return currentMode.value?.ragProvider ?? prefs.value.defaultProvider
-}
-
-function applyModeProvider(): void {
-  ragProvider.value = modeProvider()
-}
-
 /** 切换模式立即生效，只影响下一条消息；选择写入 localStorage 便于下次启动恢复 */
 function selectMode(mode: WorkMode): void {
   currentModeId.value = mode.id
@@ -817,7 +868,6 @@ function selectMode(mode: WorkMode): void {
   } catch {
     // 本地存储不可用时只在本次运行内生效
   }
-  applyModeProvider()
   modeMenuOpen.value = false
 }
 
@@ -851,7 +901,6 @@ async function refreshModes(): Promise<void> {
         // 本地存储不可用时只在本次运行内生效
       }
     }
-    applyModeProvider()
     if (modeSelectedId.value && !modes.value.some((mode) => mode.id === modeSelectedId.value)) {
       modeSelectedId.value = ''
       modeDraft.value = null
@@ -981,7 +1030,6 @@ async function removeModeDraft(): Promise<void> {
     await refreshModes()
     if (currentModeId.value === draft.id) {
       currentModeId.value = modes.value[0]?.id ?? ''
-      applyModeProvider()
     }
     const next = modes.value.find((mode) => mode.id === currentModeId.value) ?? modes.value[0]
     if (next) selectModeForEdit(next)
@@ -1089,7 +1137,6 @@ function effectiveEnabledTools(value: WorkPreferences): string[] {
 
 function applyPrefs(next: WorkPreferences): void {
   prefs.value = next
-  applyModeProvider()
 }
 
 async function openPrefs(): Promise<void> {
@@ -1406,8 +1453,14 @@ function openRunDetail(run: WorkflowRun): void {
   flowDetailRun.value = flowDetailRun.value?.id === run.id ? null : run
 }
 
-/** 点击模式选择器以外的区域时收起下拉菜单 */
+/** 点击模式选择器或面板菜单以外的区域时收起下拉菜单 */
 function onWindowClick(event: MouseEvent): void {
+  if (panelMenuOpen.value) {
+    const menu = panelMenuEl.value
+    if (!menu || !(event.target instanceof Node) || !menu.contains(event.target)) {
+      panelMenuOpen.value = false
+    }
+  }
   if (!modeMenuOpen.value) return
   const picker = modePickerEl.value
   if (picker && event.target instanceof Node && picker.contains(event.target)) return
@@ -1421,10 +1474,16 @@ function onGlobalKeydown(event: KeyboardEvent): void {
     if (flowOpen.value) closeFlows()
     if (modeOpen.value) closeModes()
     modeMenuOpen.value = false
+    panelMenuOpen.value = false
     toggleCaps()
     return
   }
   if (event.key === 'Escape') {
+    if (panelMenuOpen.value) {
+      event.preventDefault()
+      panelMenuOpen.value = false
+      return
+    }
     if (modeMenuOpen.value) {
       event.preventDefault()
       modeMenuOpen.value = false
@@ -1913,173 +1972,58 @@ onBeforeUnmount(() => {
       </footer>
     </section>
 
-    <!-- 右：证据 / 产物 -->
+    <!-- 右：注册表驱动的面板容器 -->
     <aside v-if="panelOpen" class="inspector">
-      <div class="tabs">
-        <button :class="{ 'is-active': tab === 'evidence' }" @click="tab = 'evidence'">证据链</button>
-        <button :class="{ 'is-active': tab === 'artifacts' }" @click="tab = 'artifacts'">产物</button>
+      <div class="panel-tabs">
+        <div class="panel-tab-list">
+          <div
+            v-for="panel in openPanels"
+            :key="panel.id"
+            class="panel-tab"
+            :class="{ 'is-active': activePanelId === panel.id }"
+          >
+            <button class="panel-tab-label" @click="activatePanel(panel.id)">
+              {{ panel.label }}
+            </button>
+            <button
+              v-if="!panel.pinnable && panel.closable !== false"
+              class="panel-tab-close"
+              title="关闭面板"
+              @click.stop="closePanel(panel.id)"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        <div ref="panelMenuEl" class="panel-add">
+          <button class="panel-add-btn" title="新增面板" @click.stop="togglePanelMenu">+</button>
+          <div v-if="panelMenuOpen" class="panel-menu">
+            <button
+              v-for="panel in closedPanels"
+              :key="panel.id"
+              class="panel-menu-item"
+              @click="addPanel(panel.id)"
+            >
+              <span class="panel-menu-name">{{ panel.label }}</span>
+              <span class="panel-menu-desc">{{ panel.description }}</span>
+            </button>
+            <div v-if="closedPanels.length === 0" class="panel-menu-empty">全部面板已打开</div>
+          </div>
+        </div>
       </div>
 
       <div class="insp-scroll">
-        <template v-if="tab === 'evidence'">
-          <div class="insp-block kb-block">
-            <div class="insp-head kb-head">
-              <h4>本地知识库</h4>
-              <span class="note">{{ kbDocuments.length }} 篇 · {{ kbChunkCount }} 片段</span>
-              <button class="kb-import" :disabled="kbImporting" @click="importKb">
-                {{ kbImporting ? '导入中…' : '导入文件' }}
-              </button>
-            </div>
-
-            <div v-if="kbError" class="rag-error">{{ kbError }}</div>
-            <div v-if="kbNotice" class="kb-notice">{{ kbNotice }}</div>
-
-            <ul v-if="kbDocuments.length" class="kb-list">
-              <li v-for="doc in kbDocuments" :key="doc.id" class="kb-item">
-                <div class="kb-line">
-                  <span class="kb-title" :title="doc.title">{{ doc.title }}</span>
-                  <button class="kb-del" title="删除该资料" @click="removeKb(doc.id)">×</button>
-                </div>
-                <div class="kb-line kb-sub">
-                  <span class="kb-count">{{ doc.chunkCount }} 片段</span>
-                  <span class="kb-file" :title="doc.path">{{ fileName(doc.path) }}</span>
-                </div>
-              </li>
-            </ul>
-            <div v-else class="kb-empty">尚未导入资料，支持 txt / md / html / json / csv</div>
-          </div>
-
-          <div class="insp-block rag-block">
-            <div class="insp-head">
-              <h4>知识库检索</h4>
-              <span class="note">{{ ragResult?.chunks.length ?? 0 }} 条</span>
-            </div>
-            <div class="rag-form">
-              <input
-                v-model="ragQuery"
-                type="text"
-                placeholder="输入检索问题，Enter 检索"
-                :disabled="ragLoading"
-                @keydown.enter="onRagEnter"
-              />
-              <select v-model="ragProvider" :disabled="ragLoading">
-                <option value="local">本地库</option>
-                <option value="cloud">云端公共库</option>
-                <option value="both">双路合并</option>
-              </select>
-              <button
-                class="rag-run"
-                :disabled="ragLoading || !ragQuery.trim()"
-                @click="searchKnowledge"
-              >
-                {{ ragLoading ? '检索中…' : '检索' }}
-              </button>
-            </div>
-
-            <div v-if="ragError" class="rag-error">{{ ragError }}</div>
-
-            <div v-if="ragResult && ragResult.chunks.length" class="rag-results">
-              <article
-                v-for="chunk in ragResult.chunks"
-                :key="chunk.chunkId"
-                class="rag-item"
-                :class="{ 'has-demo': chunk.demo }"
-              >
-                <span v-if="chunk.demo" class="rag-demo-badge">演示</span>
-                <p class="rag-item-text">{{ chunk.text }}</p>
-                <div class="rag-source">
-                  <a
-                    v-if="chunk.source.url"
-                    class="rag-source-title"
-                    :href="chunk.source.url"
-                    target="_blank"
-                    rel="noreferrer"
-                    :title="chunk.source.title"
-                  >
-                    {{ chunk.source.title }}
-                  </a>
-                  <span v-else class="rag-source-title" :title="chunk.source.title">
-                    {{ chunk.source.title }}
-                  </span>
-                  <span class="rag-origin">{{ ragOrigin(chunk) }}</span>
-                </div>
-                <div class="rag-foot">
-                  <span class="rag-provider" :class="'is-' + chunk.provider">
-                    {{ chunk.provider === 'local' ? '本地' : '云端' }}
-                  </span>
-                  <span class="rag-score">分数 {{ chunk.score.toFixed(2) }}</span>
-                </div>
-              </article>
-            </div>
-
-            <div v-if="ragResult?.note" class="rag-note">{{ ragResult.note }}</div>
-            <div
-              v-else-if="!ragLoading && ragResult && ragResult.chunks.length === 0"
-              class="rag-empty"
-            >
-              没有匹配的片段。
-            </div>
-          </div>
-
-          <div class="insp-block">
-            <div class="insp-head">
-              <h4>检索来源</h4>
-              <span class="note">{{ currentEvidence.length }} 条</span>
-            </div>
-            <ul v-if="currentEvidence.length" class="evidence">
-              <li v-for="item in currentEvidence" :key="item.url || item.path">
-                <a v-if="item.url" :href="item.url" target="_blank" rel="noreferrer" :title="item.url">
-                  <span class="ev-title">{{ item.title }}</span>
-                  <span class="ev-host">{{ evidenceDomain(item.url) }}</span>
-                </a>
-                <div v-else class="ev-static" :title="item.path">
-                  <span class="ev-title">{{ item.title }}</span>
-                  <span class="ev-local">{{ item.path ? fileName(item.path) : '本地资料' }}</span>
-                </div>
-              </li>
-            </ul>
-            <div v-else class="panel-empty">
-              <p>来源会标注在回答中</p>
-              <span>Agent 联网搜索、读取网页或检索本地知识库后，来源会自动汇总到这里。</span>
-            </div>
-          </div>
-
-          <div v-if="currentTools.length" class="insp-block">
-            <div class="insp-head">
-              <h4>执行轨迹</h4>
-              <span class="note">{{ doneToolCount }} / {{ currentTools.length }}</span>
-            </div>
-            <ul class="trace">
-              <li
-                v-for="tool in currentTools"
-                :key="tool.id"
-                :class="'is-' + tool.status"
-              >
-                <span class="trace-dot" />
-                <span class="trace-title">
-                  {{ toolLabel(tool.name) }}
-                  <template v-if="toolArgSummary(tool.args)">
-                    · {{ toolArgSummary(tool.args) }}
-                  </template>
-                </span>
-                <span class="trace-state">{{ statusText(tool.status) }}</span>
-              </li>
-            </ul>
-          </div>
-        </template>
-
-        <template v-else>
-          <div class="insp-block">
-            <div class="insp-head">
-              <h4>产物</h4>
-              <span class="note">0 项</span>
-            </div>
-            <div class="panel-empty">
-              <p>暂无可导出的产物</p>
-              <span>报告导出与证据清单将在后续阶段提供。</span>
-            </div>
-          </div>
-        </template>
+        <KeepAlive>
+          <component
+            :is="activePanelDefinition.component"
+            :key="activePanelId"
+            v-bind="activePanelProps"
+            @import="importKb"
+            @remove="removeKb"
+            @manage="openModes"
+          />
+        </KeepAlive>
       </div>
     </aside>
 
@@ -3626,38 +3570,149 @@ onBeforeUnmount(() => {
   border-left: 1px solid var(--line);
 }
 
-.tabs {
+.panel-tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 10px 12px 0;
+  padding: 8px 8px 0 12px;
   border-bottom: 1px solid var(--line);
 }
 
-.tabs button {
+.panel-tab-list {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.panel-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-tab {
   position: relative;
-  padding: 6px 10px 9px;
-  font-size: 12.5px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 9px 8px;
   color: var(--text-3);
   transition: color 0.16s ease;
 }
 
-.tabs button:hover {
+.panel-tab:hover {
   color: var(--text-2);
 }
 
-.tabs button.is-active {
+.panel-tab.is-active {
   color: var(--text);
 }
 
-.tabs button.is-active::after {
+.panel-tab.is-active::after {
   content: "";
   position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: -1px;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
   height: 2px;
   background: var(--accent);
   border-radius: 2px;
+}
+
+.panel-tab-label {
+  font-size: 12.5px;
+  color: inherit;
+}
+
+.panel-tab-close {
+  width: 14px;
+  height: 14px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-3);
+  border-radius: 4px;
+  opacity: 0.55;
+  transition: color 0.14s ease, background 0.14s ease, opacity 0.14s ease;
+}
+
+.panel-tab:hover .panel-tab-close,
+.panel-tab.is-active .panel-tab-close {
+  opacity: 1;
+}
+
+.panel-tab-close:hover {
+  color: #ff8b8b;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.panel-add {
+  position: relative;
+  flex: 0 0 auto;
+  padding-bottom: 5px;
+}
+
+.panel-add-btn {
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-3);
+  border-radius: 6px;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+
+.panel-add-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.panel-menu {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  z-index: 20;
+  width: 220px;
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+
+.panel-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  text-align: left;
+  border-radius: 6px;
+  transition: background 0.14s ease;
+}
+
+.panel-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.panel-menu-name {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.panel-menu-desc {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.panel-menu-empty {
+  padding: 8px 9px;
+  font-size: 10.5px;
+  color: var(--text-3);
 }
 
 .insp-scroll {
@@ -3667,84 +3722,7 @@ onBeforeUnmount(() => {
   padding: 14px 12px 18px;
 }
 
-.insp-block + .insp-block {
-  margin-top: 18px;
-}
-
-.insp-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 0 2px 8px;
-}
-
-.insp-head h4 {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  color: var(--text-2);
-}
-
-.note {
-  font-size: 10.5px;
-  color: var(--text-3);
-}
-
-.panel-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 14px 12px;
-  background: rgba(255, 255, 255, 0.022);
-  border: 1px dashed var(--line-2);
-  border-radius: var(--radius-sm);
-}
-
-.panel-empty p {
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-2);
-}
-
-.panel-empty span {
-  font-size: 10.5px;
-  line-height: 1.7;
-  color: var(--text-3);
-}
-
-/* ---------------- 本地知识库 ---------------- */
-
-.kb-head {
-  align-items: center;
-}
-
-.kb-head .note {
-  margin-left: auto;
-  margin-right: 8px;
-}
-
-.kb-import {
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  font-size: 10.5px;
-  color: var(--text-2);
-  white-space: nowrap;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
-}
-
-.kb-import:hover:not(:disabled) {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border-color: var(--line-2);
-}
-
-.kb-import:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+/* ---------------- 弹层通用提示（偏好 / 模式 / 工作流复用） ---------------- */
 
 .kb-notice {
   margin-bottom: 7px;
@@ -3758,282 +3736,6 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
-.kb-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  list-style: none;
-}
-
-.kb-item {
-  padding: 7px 9px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  transition: border-color 0.16s ease;
-}
-
-.kb-item:hover {
-  border-color: var(--line-2);
-}
-
-.kb-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.kb-sub {
-  margin-top: 3px;
-}
-
-.kb-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 11.5px;
-  color: var(--text-2);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.kb-count {
-  flex: 0 0 auto;
-  font-size: 9.5px;
-  color: var(--text-3);
-}
-
-.kb-file {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 9.5px;
-  color: var(--text-3);
-  text-align: right;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.kb-del {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--text-3);
-  border-radius: 4px;
-  transition: color 0.14s ease, background 0.14s ease;
-}
-
-.kb-del:hover {
-  color: #ff8b8b;
-  background: rgba(255, 107, 107, 0.14);
-}
-
-.kb-empty {
-  padding: 12px 10px;
-  font-size: 10.5px;
-  line-height: 1.7;
-  color: var(--text-3);
-  text-align: center;
-  background: rgba(255, 255, 255, 0.018);
-  border: 1px dashed var(--line);
-  border-radius: var(--radius-sm);
-}
-
-/* ---------------- 知识库检索 ---------------- */
-
-.rag-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 78px 46px;
-  gap: 5px;
-}
-
-.rag-form input,
-.rag-form select,
-.rag-run {
-  height: 30px;
-  min-width: 0;
-  font-size: 11px;
-  border-radius: 6px;
-}
-
-.rag-form input {
-  padding: 0 8px;
-  color: var(--text);
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  outline: none;
-  transition: border-color 0.16s ease, background 0.16s ease;
-}
-
-.rag-form input::placeholder {
-  color: var(--text-3);
-}
-
-.rag-form input:focus,
-.rag-form select:focus {
-  border-color: var(--accent);
-}
-
-.rag-form select {
-  padding: 0 2px;
-  color: var(--text-2);
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  outline: none;
-  cursor: pointer;
-}
-
-.rag-form select option {
-  color: var(--text);
-  background: var(--bg-2);
-}
-
-.rag-form input:disabled,
-.rag-form select:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.rag-run {
-  font-weight: 500;
-  color: #0b0d11;
-  background: var(--accent);
-  transition: filter 0.16s ease, opacity 0.16s ease;
-}
-
-.rag-run:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.rag-run:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.rag-results {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-top: 9px;
-}
-
-.rag-item {
-  position: relative;
-  padding: 8px 9px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  transition: border-color 0.16s ease;
-}
-
-.rag-item:hover {
-  border-color: var(--line-2);
-}
-
-.rag-item.has-demo {
-  padding-top: 24px;
-}
-
-.rag-item-text {
-  display: -webkit-box;
-  overflow: hidden;
-  font-size: 11.5px;
-  line-height: 1.65;
-  color: var(--text-2);
-  word-break: break-word;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-}
-
-.rag-demo-badge {
-  position: absolute;
-  top: 6px;
-  right: 7px;
-  padding: 0 6px;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 16px;
-  color: #201203;
-  background: #ffb04d;
-  border-radius: 99px;
-  box-shadow: 0 0 0 1px rgba(255, 176, 77, 0.35);
-}
-
-.rag-source {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  margin-top: 6px;
-}
-
-.rag-source-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 10.5px;
-  color: var(--text-2);
-  text-decoration: none;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-a.rag-source-title:hover {
-  color: var(--accent);
-}
-
-.rag-origin {
-  flex: 0 1 auto;
-  max-width: 45%;
-  overflow: hidden;
-  font-size: 9.5px;
-  color: var(--text-3);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.rag-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 5px;
-}
-
-.rag-provider {
-  padding: 0 6px;
-  font-size: 9px;
-  line-height: 16px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 99px;
-}
-
-.rag-provider.is-cloud {
-  color: #8fb4ff;
-  background: rgba(96, 145, 255, 0.14);
-}
-
-.rag-score {
-  margin-left: auto;
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 9.5px;
-  color: var(--text-3);
-}
-
-.rag-note {
-  margin-top: 8px;
-  padding: 7px 9px;
-  font-size: 10.5px;
-  line-height: 1.65;
-  color: var(--text-3);
-  background: rgba(255, 255, 255, 0.022);
-  border: 1px dashed var(--line-2);
-  border-radius: var(--radius-sm);
-}
-
 .rag-error {
   margin-top: 8px;
   padding: 7px 9px;
@@ -4043,123 +3745,6 @@ a.rag-source-title:hover {
   background: rgba(255, 107, 107, 0.1);
   border: 1px solid rgba(255, 107, 107, 0.28);
   border-radius: var(--radius-sm);
-}
-
-.rag-empty {
-  margin-top: 8px;
-  padding: 10px 9px;
-  font-size: 10.5px;
-  color: var(--text-3);
-  text-align: center;
-  background: rgba(255, 255, 255, 0.018);
-  border: 1px dashed var(--line);
-  border-radius: var(--radius-sm);
-}
-
-.trace {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 0 2px;
-  list-style: none;
-}
-
-.trace li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--text-2);
-}
-
-.trace-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  background: transparent;
-  border: 1px solid var(--text-3);
-  border-radius: 99px;
-}
-
-.trace li.is-running .trace-dot {
-  background: var(--accent);
-  border-color: var(--accent);
-  animation: pulse 1.1s ease-in-out infinite;
-}
-
-.trace li.is-done .trace-dot {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.trace li.is-failed .trace-dot {
-  background: #ff6b6b;
-  border-color: #ff6b6b;
-}
-
-.trace-title {
-  flex: 1;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.trace-state {
-  flex: 0 0 auto;
-  font-size: 10px;
-  color: var(--text-3);
-}
-
-/* ---------------- 证据链来源 ---------------- */
-
-.evidence {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 0 2px;
-  list-style: none;
-}
-
-.evidence a,
-.evidence .ev-static {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 7px 9px;
-  text-decoration: none;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  transition: background 0.16s ease, border-color 0.16s ease;
-}
-
-.evidence a:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--line-2);
-}
-
-.ev-title {
-  display: -webkit-box;
-  overflow: hidden;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--text-2);
-  word-break: break-word;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.ev-host {
-  font-size: 10px;
-  color: var(--accent);
-}
-
-.ev-local {
-  overflow: hidden;
-  font-size: 10px;
-  color: var(--text-3);
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* ---------------- 能力面板 ---------------- */
