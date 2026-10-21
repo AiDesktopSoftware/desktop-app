@@ -71,6 +71,7 @@ const MAIN_MIN = 360
 const HANDLE_WIDTH = 5
 const SESSION_WIDTH_KEY = 'work.session-width'
 const INSPECTOR_WIDTH_KEY = 'work.inspector-width'
+const ACTIVE_SESSION_KEY = 'work.active-session'
 
 const workEl = ref<HTMLElement | null>(null)
 const workWidth = ref(0)
@@ -2079,6 +2080,10 @@ function persist(): Promise<void> {
   persistQueue = persistQueue.then(async () => {
     try {
       await api.saveSessions(serializeSessions())
+      // 记住当前选中的会话，下次启动优先恢复
+      if (activeSessionId.value) {
+        window.localStorage.setItem(ACTIVE_SESSION_KEY, activeSessionId.value)
+      }
     } catch (error) {
       console.warn('会话保存失败', error)
     }
@@ -2208,8 +2213,11 @@ onMounted(async () => {
     }
     await refreshModes()
     if (sessions.value.length > 0) {
-      const latest = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0]
-      activeSessionId.value = latest.id
+      // 优先恢复用户上次选中的会话，找不到再 fallback 到最新
+      const lastId = window.localStorage.getItem(ACTIVE_SESSION_KEY) ?? ''
+      const existing = lastId ? sessions.value.find((s) => s.id === lastId) : undefined
+      activeSessionId.value =
+        existing ? existing.id : [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0].id
     }
   } catch (error) {
     settingsError.value = error instanceof Error ? error.message : '读取配置失败'
