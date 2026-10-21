@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import MessageActions from './MessageActions.vue'
 import { PANELS, type PanelDefinition } from './panels/registry'
 import type {
   KbDocument,
@@ -227,6 +228,16 @@ const currentRequestId = ref('')
 const pendingDeleteId = ref('')
 const streamEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
+
+// 消息内联编辑：同一时刻只允许一条用户消息处于编辑态
+const editingId = ref('')
+const editingText = ref('')
+const editTextareaEl = ref<HTMLTextAreaElement | null>(null)
+
+/** 编辑框位于 v-for 内，用函数 ref 取当前唯一激活的 textarea */
+function setEditTextarea(el: unknown): void {
+  editTextareaEl.value = el instanceof HTMLTextAreaElement ? el : null
+}
 
 // 能力面板（Ctrl + K）：列表 -> 参数表单 -> 执行结果
 const capabilities = ref<WorkCapability[]>([])
@@ -939,11 +950,113 @@ async function retryMessage(message: WorkMessage): Promise<void> {
   await runAgent(question, session, { assistant: message })
 }
 
+// ---------------- 消息操作：复制 / 分支 / 修改 / 删除 ----------------
+
+/** 复制消息正文，剪贴板不可用时静默降级 */
+async function copyMessage(message: WorkMessage): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(message.content)
+  } catch {
+    // 没有剪贴板权限时不做提示，避免打断阅读
+  }
+}
+
+/** 以当前消息为终点复制成新会话，原会话保持不变 */
+async function branchMessage(message: WorkMessage): Promise<void> {
+  if (busy.value) return
+  const session = activeSession.value
+  if (!session) return
+  const index = session.messages.findIndex((item) => item.id === message.id)
+  if (index < 0) return
+
+  // 深拷贝并剔除运行时字段，同时换新 id，避免分支与原会话共享引用或状态
+  const messages = JSON.parse(JSON.stringify(session.messages.slice(0, index + 1))) as WorkMessage[]
+  for (const item of messages) {
+    delete item.streaming
+    item.id = uid()
+  }
+
+  const now = Date.now()
+  const branch: WorkSession = {
+    id: uid(),
+    title: `${session.title} · 分支`,
+    createdAt: now,
+    updatedAt: now,
+    messages
+  }
+  sessions.value.unshift(branch)
+  activeSessionId.value = branch.id
+  cancelEdit()
+  await persist()
+  scrollToBottom()
+}
+
+/** 进入内联编辑态，光标停在原文末尾 */
+function startEdit(message: WorkMessage): void {
+  if (busy.value || message.role !== 'user') return
+  editingId.value = message.id
+  editingText.value = message.content
+  void nextTick(() => {
+    const el = editTextareaEl.value
+    if (!el) return
+    el.focus()
+    const end = el.value.length
+    el.setSelectionRange(end, end)
+  })
+}
+
+function cancelEdit(): void {
+  editingId.value = ''
+  editingText.value = ''
+}
+
+/** 保存修改：丢弃该消息之后的全部消息，再以当前会话重新执行 Agent */
+async function saveEdit(): Promise<void> {
+  if (busy.value) return
+  const session = activeSession.value
+  if (!session) return
+  const index = session.messages.findIndex((item) => item.id === editingId.value)
+  if (index < 0) return
+  const message = session.messages[index]
+  if (message.role !== 'user') return
+  const text = editingText.value.trim()
+  if (!text) return
+
+  message.content = text
+  session.messages.splice(index + 1)
+  session.updatedAt = Date.now()
+  cancelEdit()
+  await persist()
+  await runAgent(text, session)
+}
+
+/** 删除消息：用户消息连带紧随其后的助手消息，助手消息只删自己 */
+async function deleteMessage(message: WorkMessage): Promise<void> {
+  if (busy.value) return
+  const session = activeSession.value
+  if (!session) return
+  const index = session.messages.findIndex((item) => item.id === message.id)
+  if (index < 0) return
+
+  if (message.role === 'user') {
+    const next = session.messages[index + 1]
+    session.messages.splice(index, next && next.role === 'assistant' ? 2 : 1)
+  } else {
+    session.messages.splice(index, 1)
+  }
+  if (editingId.value && !session.messages.some((item) => item.id === editingId.value)) {
+    cancelEdit()
+  }
+  session.updatedAt = Date.now()
+  await persist()
+}
+
 function newSession(): void {
   if (busy.value) return
   activeSessionId.value = ''
   draft.value = ''
   pendingDeleteId.value = ''
+  cancelEdit()
   scrollToBottom()
   void nextTick(() => textareaEl.value?.focus())
 }
@@ -952,6 +1065,7 @@ function selectSession(id: string): void {
   if (activeSessionId.value === id) return
   activeSessionId.value = id
   pendingDeleteId.value = ''
+  cancelEdit()
   scrollToBottom()
 }
 
@@ -983,6 +1097,7 @@ function confirmDelete(id: string): void {
   sessions.value = sessions.value.filter((session) => session.id !== id)
   cancelDelete()
   if (activeSessionId.value === id) {
+    cancelEdit()
     const next = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt)[0]
     activeSessionId.value = next?.id ?? ''
   }
@@ -2054,7 +2169,37 @@ onBeforeUnmount(() => {
 
         <template v-for="message in activeMessages" :key="message.id">
           <div v-if="message.role === 'user'" class="msg user">
-            <div class="bubble">{{ message.content }}</div>
+            <div v-if="editingId === message.id" class="edit-box">
+              <textarea
+                :ref="setEditTextarea"
+                v-model="editingText"
+                class="edit-input"
+                rows="3"
+              />
+              <div class="edit-actions">
+                <button
+                  class="edit-save"
+                  :disabled="busy || !editingText.trim()"
+                  @click="saveEdit"
+                >
+                  保存并重发
+                </button>
+                <button class="edit-cancel" @click="cancelEdit">取消</button>
+              </div>
+            </div>
+            <template v-else>
+              <div class="bubble">{{ message.content }}</div>
+              <MessageActions
+                v-if="!message.streaming"
+                class="msg-actions"
+                role="user"
+                :disabled="busy"
+                @copy="copyMessage(message)"
+                @branch="branchMessage(message)"
+                @edit="startEdit(message)"
+                @delete="deleteMessage(message)"
+              />
+            </template>
           </div>
 
           <div v-else class="msg agent">
@@ -2107,6 +2252,18 @@ onBeforeUnmount(() => {
                   重试
                 </button>
               </div>
+
+              <MessageActions
+                v-if="!message.streaming"
+                class="msg-actions"
+                role="assistant"
+                :disabled="busy"
+                :retrying="busy"
+                @copy="copyMessage(message)"
+                @branch="branchMessage(message)"
+                @delete="deleteMessage(message)"
+                @retry="retryMessage(message)"
+              />
             </div>
           </div>
         </template>
@@ -3402,7 +3559,87 @@ onBeforeUnmount(() => {
 }
 
 .msg.user {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* 操作行默认隐藏，悬停消息或用键盘聚焦时显示 */
+.msg-actions {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.msg:hover .msg-actions,
+.msg:focus-within .msg-actions,
+.msg-actions:focus-within {
+  opacity: 1;
+}
+
+/* ---------------- 用户消息内联编辑 ---------------- */
+
+.msg.user .edit-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(78%, 620px);
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+}
+
+.edit-input {
+  width: 100%;
+  min-height: 64px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.72;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: vertical;
+}
+
+.edit-actions {
+  display: flex;
   justify-content: flex-end;
+  gap: 8px;
+}
+
+.edit-save,
+.edit-cancel {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  border-radius: 6px;
+  transition: background 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+}
+
+.edit-save {
+  color: #0d1b13;
+  background: var(--accent);
+}
+
+.edit-save:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.edit-save:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.edit-cancel {
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.edit-cancel:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .bubble {
