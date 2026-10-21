@@ -100,6 +100,8 @@ export interface WorkSession {
   createdAt: number
   updatedAt: number
   messages: WorkMessage[]
+  /** 置顶会话：始终显示在列表最前，不参与日期分组 */
+  pinned?: boolean
 }
 
 /** 发送给模型的对话消息 */
@@ -301,4 +303,6 @@ export interface WorkApi {
   customCapList(): Promise<WorkCustomCapListResult>
   customCapSave(capability: CustomCapability): Promise<{ ok: boolean; capability?: CustomCapability; message?: string }>
   customCapRemove(id: string): Promise<WorkCustomCapRemoveResult>
+  // 文件导出（主进程弹保存对话框 + 写文件）
+  workExport(content: string, defaultName?: string): Promise<{ ok: boolean; path?: string; message?: string }>
 }

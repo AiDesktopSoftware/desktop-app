@@ -226,6 +226,7 @@ const stopRequested = ref(false)
 const currentRequestId = ref('')
 
 const pendingDeleteId = ref('')
+const sessionMenuId = ref('')  // 当前弹出菜单所属的 session id；空串表示菜单关闭
 const streamEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 
@@ -348,13 +349,27 @@ const filteredSessions = computed(() => {
 
 const groupedSessions = computed(() => {
   const groups = new Map<string, WorkSession[]>()
-  const list = [...filteredSessions.value].sort((a, b) => b.updatedAt - a.updatedAt)
-  for (const session of list) {
+  // 置顶会话单独成组放最前，其余按日期分组
+  const pinned: WorkSession[] = []
+  const rest: WorkSession[] = []
+  for (const s of filteredSessions.value) {
+    if (s.pinned) pinned.push(s)
+    else rest.push(s)
+  }
+  // pinned 内部按 updatedAt 倒序
+  pinned.sort((a, b) => b.updatedAt - a.updatedAt)
+  rest.sort((a, b) => b.updatedAt - a.updatedAt)
+  const result: { name: string; items: WorkSession[] }[] = []
+  if (pinned.length > 0) result.push({ name: '置顶', items: pinned })
+  for (const session of rest) {
     const name = dayGroup(session.updatedAt)
     if (!groups.has(name)) groups.set(name, [])
     groups.get(name)!.push(session)
   }
-  return Array.from(groups, ([name, items]) => ({ name, items }))
+  for (const [name, items] of groups) {
+    result.push({ name, items })
+  }
+  return result
 })
 
 const currentTools = computed<WorkToolCall[]>(() => {
@@ -1102,6 +1117,92 @@ function confirmDelete(id: string): void {
     activeSessionId.value = next?.id ?? ''
   }
   void persist()
+}
+
+// ---------------- 会话快捷操作（P3：Trae 风格）----------------
+
+function renameSession(id: string): void {
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+  const newName = prompt('重命名会话', session.title)
+  if (!newName || !newName.trim() || newName.trim() === session.title) return
+  session.title = newName.trim()
+  session.updatedAt = Date.now()
+  void persist()
+}
+
+function togglePinSession(id: string): void {
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+  session.pinned = !session.pinned
+  session.updatedAt = Date.now()
+  void persist()
+}
+
+function copySession(id: string): void {
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+  const now = Date.now()
+  const cloned: WorkSession = {
+    id: `s_${Math.random().toString(36).slice(2, 10)}`,
+    title: `${session.title} · 副本`,
+    pinned: session.pinned,
+    createdAt: now,
+    updatedAt: now,
+    messages: session.messages.map((m) => ({
+      ...m,
+      streaming: false,
+      error: undefined,
+      tools: m.tools ? m.tools.map((t) => ({ ...t })) : undefined,
+      evidence: m.evidence ? m.evidence.map((e) => ({ ...e })) : undefined
+    }))
+  }
+  sessions.value = [cloned, ...sessions.value]
+  activeSessionId.value = cloned.id
+  void persist()
+}
+
+async function exportSession(id: string): Promise<void> {
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+  // 导出为 Markdown
+  const lines: string[] = [`# ${session.title}`, '']
+  lines.push(`> 创建于 ${new Date(session.createdAt).toLocaleString()}，最后更新 ${new Date(session.updatedAt).toLocaleString()}`, '')
+  for (const msg of session.messages) {
+    const role = msg.role === 'user' ? '**用户**' : '**助手**'
+    lines.push(`## ${role}`, '')
+    lines.push(msg.content.trim(), '')
+    if (msg.tools && msg.tools.length > 0) {
+      lines.push('<details><summary>工具调用</summary>', '')
+      for (const t of msg.tools) {
+        lines.push(`- \`${t.name}\`: \`\`\`json`)
+        try { lines.push(JSON.stringify(t.args, null, 2)) } catch { lines.push(String(t.args)) }
+        lines.push('```')
+        if (t.output) lines.push(`  输出：${t.output.slice(0, 500)}`)
+      }
+      lines.push('</details>', '')
+    }
+    if (msg.evidence && msg.evidence.length > 0) {
+      lines.push('**来源**：')
+      for (const e of msg.evidence) {
+        const label = e.url ? e.url : e.path || e.title
+        lines.push(`- [${e.title}](${label})`)
+      }
+      lines.push('')
+    }
+  }
+  const md = lines.join('\n')
+  const safeName = session.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 50) || '会话'
+  try {
+    const result = await api.workExport(md, `${safeName}.md`)
+    if (result.ok && result.path) {
+      alert(`已导出到：${result.path}`)
+    } else if (result.message && result.message !== '已取消') {
+      alert(result.message)
+    }
+  } catch (err) {
+    alert(err instanceof Error ? err.message : '导出失败')
+  }
 }
 
 // ---------------- 模式 ----------------
@@ -1879,6 +1980,13 @@ function onWindowClick(event: MouseEvent): void {
       panelMenuOpen.value = false
     }
   }
+  // 会话三项菜单：点击外部关闭
+  if (sessionMenuId.value && event.target instanceof Node) {
+    const rail = (event.target as HTMLElement).closest('.rail-item.session')
+    if (!rail || !rail.classList.contains('menu-open')) {
+      sessionMenuId.value = ''
+    }
+  }
   if (!modeMenuOpen.value) return
   const picker = modePickerEl.value
   if (picker && event.target instanceof Node && picker.contains(event.target)) return
@@ -2172,22 +2280,73 @@ onBeforeUnmount(() => {
             v-for="session in group.items"
             :key="session.id"
             class="rail-item session"
-            :class="{ 'is-active': activeSessionId === session.id }"
+            :class="{ 'is-active': activeSessionId === session.id, 'is-pinned': session.pinned, 'menu-open': sessionMenuId === session.id }"
             @click="selectSession(session.id)"
           >
+            <svg v-if="session.pinned" class="rail-item-pin" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M16 3l5 5-3 1-1 5 3 3H4l3-3-1-5-1-1 5-1 5-4z" />
+            </svg>
             <span class="rail-item-text" :title="session.title">{{ session.title }}</span>
-            <span v-if="pendingDeleteId !== session.id" class="rail-item-count">
+            <span v-if="pendingDeleteId !== session.id && sessionMenuId !== session.id" class="rail-item-count">
               {{ formatSessionTime(session.updatedAt) }}
             </span>
+
+            <!-- 三个点菜单按钮 -->
             <button
               v-if="pendingDeleteId !== session.id"
-              class="del-btn"
-              title="删除会话"
-              @click.stop="requestDelete(session.id)"
+              class="rail-dots"
+              title="会话操作"
+              @click.stop="sessionMenuId = sessionMenuId === session.id ? '' : session.id"
             >
-              ×
+              <span /><span /><span />
             </button>
-            <template v-else>
+
+            <!-- 弹出菜单：跟 Trae 对齐（置顶 / 重命名 / 导出 / 复制 / 删除） -->
+            <div
+              v-if="sessionMenuId === session.id"
+              class="rail-menu"
+              @click.stop
+            >
+              <button class="rail-menu-item" @click="togglePinSession(session.id); sessionMenuId = ''">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 3l5 5-3 1-1 5 3 3H4l3-3-1-5-1-1 5-1 5-4z" />
+                </svg>
+                {{ session.pinned ? '取消置顶' : '置顶' }}
+              </button>
+              <button class="rail-menu-item" @click="renameSession(session.id); sessionMenuId = ''">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4z" />
+                </svg>
+                重命名
+              </button>
+              <button class="rail-menu-item" @click="exportSession(session.id); sessionMenuId = ''">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                导出
+              </button>
+              <button class="rail-menu-item" @click="copySession(session.id); sessionMenuId = ''">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+                复制会话
+              </button>
+              <div class="rail-menu-sep" />
+              <button class="rail-menu-item danger" @click="requestDelete(session.id); sessionMenuId = ''">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+                </svg>
+                删除任务
+              </button>
+            </div>
+
+            <!-- 删除确认 -->
+            <template v-if="pendingDeleteId === session.id">
               <button class="del-confirm" @click.stop="confirmDelete(session.id)">确认</button>
               <button class="del-cancel" @click.stop="cancelDelete">取消</button>
             </template>
@@ -3454,26 +3613,98 @@ onBeforeUnmount(() => {
   color: var(--text-3);
 }
 
-.del-btn {
+/* 置顶标记 */
+.rail-item-pin {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--text-3);
-  opacity: 0;
-  border-radius: 4px;
-  transition: opacity 0.15s ease, color 0.15s ease;
+  width: 10px;
+  height: 10px;
+  color: var(--accent);
 }
 
-.rail-item:hover .del-btn,
-.del-btn:focus-visible {
+/* 三个点按钮 */
+.rail-dots {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.12s ease;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.rail-dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.rail-item:hover .rail-dots,
+.rail-item.menu-open .rail-dots,
+.rail-dots:focus-visible {
   opacity: 1;
 }
-
-.del-btn:hover {
-  color: #ff7a7a;
+.rail-dots:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
+.rail-dots:hover span {
+  background: var(--text);
+}
+
+/* 弹出菜单（Trae 风格） */
+.rail-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.rail-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.rail-menu-item:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.rail-menu-item svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.rail-menu-item.danger {
+  color: #c06a6a;
+}
+.rail-menu-item.danger:hover {
+  color: #ff7a7a;
+  background: rgba(192, 106, 106, 0.1);
+}
+.rail-menu-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--line);
+}
+
+.del-btn { display: none; } /* 保留兼容，不再使用 */
 
 .del-confirm,
 .del-cancel {

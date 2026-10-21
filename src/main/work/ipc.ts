@@ -556,4 +556,36 @@ export function registerWorkIpc(): void {
       }
     }
   )
+
+  // ---------------- 文件导出 ----------------
+
+  ipcMain.handle(
+    'work:export',
+    async (_event, payload: { content?: unknown; defaultName?: unknown; filters?: unknown }) => {
+      try {
+        const content = typeof payload?.content === 'string' ? payload.content : ''
+        const defaultName = typeof payload?.defaultName === 'string' ? payload.defaultName : 'export.md'
+        const filters = Array.isArray(payload?.filters)
+          ? (payload.filters as { name: string; extensions: string[] }[])
+          : [
+              { name: 'Markdown', extensions: ['md'] },
+              { name: 'JSON', extensions: ['json'] },
+              { name: '文本', extensions: ['txt'] }
+            ]
+        const result = await dialog.showSaveDialog({
+          title: '导出会话',
+          defaultPath: defaultName,
+          filters
+        })
+        if (result.canceled || !result.filePath) {
+          return { ok: false, message: '已取消' }
+        }
+        const { promises: fs } = await import('node:fs')
+        await fs.writeFile(result.filePath, content, 'utf-8')
+        return { ok: true, path: result.filePath }
+      } catch (error) {
+        return { ok: false, message: `导出失败：${errorDetail(error)}` }
+      }
+    }
+  )
 }
