@@ -1,6 +1,8 @@
-// 工作模式能力注册表：能力元数据的单一事实来源
+// 工作模式能力注册表：内置能力（静态常量）+ 用户自定义能力（从存储动态加载）
 // Agent 的工具 schema、界面能力面板、工具中文名都从这里读取，避免多处重复定义
 import type { LlmToolSchema } from './llm'
+import type { CustomCapability } from './capabilities/custom'
+import { listCustomCapabilities } from './capabilities/custom'
 import type { WorkCapability } from '../../renderer/src/views/work/types'
 
 /** 工具参数的 JSON Schema（即 function.parameters 部分） */
@@ -16,6 +18,7 @@ export interface Capability extends WorkCapability {
   paramsSchema: ToolSchema
 }
 
+// ---- 内置能力（静态）----
 export const CAPABILITIES: Capability[] = [
   {
     id: 'web_search',
@@ -140,37 +143,83 @@ export const CAPABILITIES: Capability[] = [
   }
 ]
 
-export function getCapability(id: string): Capability | undefined {
+/** 把 CustomCapability 转成内部 Capability 格式 */
+function customToCapability(custom: CustomCapability): Capability {
+  const properties: Record<string, { type: string; description?: string }> = {}
+  for (const [key, schema] of Object.entries(custom.paramsSchema)) {
+    properties[key] = { type: schema.type, ...(schema.description ? { description: schema.description } : {}) }
+  }
+  const fields = Object.keys(custom.paramsSchema).map((key) => ({
+    key,
+    label: key,
+    placeholder: custom.paramsSchema[key].description ?? key
+  }))
+  return {
+    id: custom.id,
+    label: custom.name,
+    description: custom.description,
+    permission: 'read',
+    agentEnabled: true,
+    fields,
+    paramsSchema: {
+      type: 'object',
+      properties,
+      ...(custom.required && custom.required.length > 0 ? { required: custom.required } : {})
+    }
+  }
+}
+
+// ---- 导出：同步查询内置，异步查询全部 ----
+
+/** 同步：只查内置能力（Agent 工具循环运行路径里用，避免额外 await） */
+export function getBuiltinCapability(id: string): Capability | undefined {
   return CAPABILITIES.find((capability) => capability.id === id)
 }
 
-/**
- * 交给 Agent 的工具定义，只包含 agentEnabled 的能力。
- * enabledTools 非空时进一步限定为用户允许使用的子集，空数组表示全部放开。
- */
-export function capabilitySchemas(enabledTools?: string[]): LlmToolSchema[] {
-  const allowed =
-    enabledTools && enabledTools.length > 0 ? new Set(enabledTools) : null
-  return CAPABILITIES.filter(
-    (capability) => capability.agentEnabled && (!allowed || allowed.has(capability.id))
-  ).map((capability) => ({
-    type: 'function',
-    function: {
-      name: capability.id,
-      description: capability.description,
-      parameters: capability.paramsSchema
-    }
-  }))
+/** 异步：查全部（内置 + 自定义） */
+export async function getCapability(id: string): Promise<Capability | undefined> {
+  const builtin = CAPABILITIES.find((capability) => capability.id === id)
+  if (builtin) return builtin
+  const customAll = await listCustomCapabilities()
+  const found = customAll.find((item) => item.id === id)
+  return found ? customToCapability(found) : undefined
 }
 
-/** 下发到渲染层的元数据，剔除 Agent 专用的 schema */
-export function capabilityMetadata(): WorkCapability[] {
-  return CAPABILITIES.map(({ id, label, description, fields, permission, agentEnabled }) => ({
-    id,
-    label,
-    description,
-    fields,
-    permission,
-    agentEnabled
-  }))
+/** 异步：合并内置 + 自定义，按 enabledTools 过滤后返回给 Agent 的工具 schema */
+export async function capabilitySchemas(enabledTools?: string[]): Promise<LlmToolSchema[]> {
+  const customList = await listCustomCapabilities()
+  const all: Capability[] = [...CAPABILITIES, ...customList.map(customToCapability)]
+  const allowed =
+    enabledTools && enabledTools.length > 0 ? new Set(enabledTools) : null
+  return all
+    .filter(
+      (capability) => capability.agentEnabled && (!allowed || allowed.has(capability.id))
+    )
+    .map((capability) => ({
+      type: 'function',
+      function: {
+        name: capability.id,
+        description: capability.description,
+        parameters: capability.paramsSchema
+      }
+    }))
 }
+
+/** 异步：合并后剔除 schema，下发给渲染层 */
+export async function capabilityMetadata(): Promise<WorkCapability[]> {
+  const customList = await listCustomCapabilities()
+  const all: Capability[] = [...CAPABILITIES, ...customList.map(customToCapability)]
+  return all.map(
+    ({ id, label, description, fields, permission, agentEnabled }) => ({
+      id,
+      label,
+      description,
+      fields,
+      permission,
+      agentEnabled
+    })
+  )
+}
+
+/** 同步常量：内置能力 id 集合，用于快速判断是不是自定义能力（无 await 开销） */
+export const BUILTIN_IDS = new Set(CAPABILITIES.map((c) => c.id))

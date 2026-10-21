@@ -2,6 +2,12 @@ import { dialog, ipcMain, type WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { runAgent } from './agent'
 import { capabilityMetadata, getCapability } from './capabilities'
+import {
+  listCustomCapabilities,
+  removeCustomCapability,
+  saveCustomCapability,
+  type CustomCapability
+} from './capabilities/custom'
 import { getConfig, getPreferences, isConfigured, maskApiKey, savePreferences } from './config'
 import { importFiles, removeDocument } from './kb/ingest'
 import { loadIndex } from './kb/store'
@@ -485,7 +491,7 @@ export function registerWorkIpc(): void {
     'work:cap:run',
     async (_event, payload: { id?: unknown; args?: unknown }) => {
       const id = typeof payload?.id === 'string' ? payload.id : ''
-      const capability = getCapability(id)
+      const capability = await getCapability(id)
       if (!capability) {
         return { ok: false, content: `未知能力：${id || '(空)'}` }
       }
@@ -513,6 +519,41 @@ export function registerWorkIpc(): void {
       }
 
       return executeTool(capability.id, args)
+    }
+  )
+
+  // ---------------- 用户自定义 HTTP 能力 ----------------
+
+  ipcMain.handle('work:cap:custom:list', async () => {
+    try {
+      const list = await listCustomCapabilities()
+      return { ok: true, capabilities: list }
+    } catch (error) {
+      return { ok: false, capabilities: [], message: `读取自定义能力失败：${errorDetail(error)}` }
+    }
+  })
+
+  ipcMain.handle(
+    'work:cap:custom:save',
+    async (_event, payload: { capability?: unknown }) => {
+      try {
+        return await saveCustomCapability(payload?.capability)
+      } catch (error) {
+        return { ok: false, message: `保存自定义能力失败：${errorDetail(error)}` }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'work:cap:custom:remove',
+    async (_event, payload: { id?: unknown }) => {
+      try {
+        const id = typeof payload?.id === 'string' ? payload.id : ''
+        if (!id) return { ok: false, message: '缺少自定义能力标识' }
+        return await removeCustomCapability(id)
+      } catch (error) {
+        return { ok: false, message: `删除自定义能力失败：${errorDetail(error)}` }
+      }
     }
   )
 }

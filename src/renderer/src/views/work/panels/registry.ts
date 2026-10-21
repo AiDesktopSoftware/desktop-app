@@ -7,6 +7,7 @@ import KnowledgePanel from './KnowledgePanel.vue'
 import SearchPanel from './SearchPanel.vue'
 import ArtifactsPanel from './ArtifactsPanel.vue'
 import ModePanel from './ModePanel.vue'
+import CustomCapabilitiesPanel from './CustomCapabilitiesPanel.vue'
 
 export interface PanelDefinition {
   /** 面板唯一 id，同时作为布局持久化的键 */
@@ -61,5 +62,11 @@ export const PANELS: PanelDefinition[] = [
     label: '当前模式',
     description: '当前模式的工具、温度与检索默认值',
     component: ModePanel
+  },
+  {
+    id: 'custom-caps',
+    label: '自定义能力',
+    description: '把 HTTP 接口注册为工具，Agent 自动调用',
+    component: CustomCapabilitiesPanel
   }
 ]

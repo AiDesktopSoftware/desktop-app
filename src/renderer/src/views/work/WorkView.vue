@@ -2207,6 +2207,10 @@ onBeforeUnmount(() => {
               <span class="avatar-core" />
             </div>
             <div class="agent-body">
+              <div class="agent-meta">
+                <span class="agent-role">Agent · {{ currentModeName }}</span>
+                <span class="agent-time">{{ formatSessionTime(message.createdAt) }}</span>
+              </div>
               <div v-if="message.tools && message.tools.length" class="agent-trace">
                 <button class="at-head" @click="toggleTools(message)">
                   <span class="at-title">执行轨迹</span>
@@ -2293,11 +2297,16 @@ onBeforeUnmount(() => {
               <span class="stop-icon" />
               停止
             </button>
-            <button v-else class="send-btn" :disabled="!draft.trim()" @click="send">
+            <button
+              v-else
+              class="send-btn"
+              title="发送"
+              :disabled="!draft.trim()"
+              @click="send"
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M5 12h13M13 6l6 6-6 6" />
               </svg>
-              发送
             </button>
           </div>
         </div>
@@ -3037,7 +3046,7 @@ onBeforeUnmount(() => {
   left: 2px;
   width: 1px;
   background: transparent;
-  transition: background 0.16s ease;
+  transition: background 0.15s ease;
 }
 
 .resize-handle:hover::after,
@@ -3053,12 +3062,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: var(--session-w);
   min-height: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 42%), var(--bg-1);
+  background: var(--bg-1);
   border-right: 1px solid var(--line);
 }
 
 .rail-head {
-  padding: 14px 12px 8px;
+  padding: 12px 10px 8px;
 }
 
 .new-btn {
@@ -3067,13 +3076,14 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 6px;
   width: 100%;
-  padding: 8px 10px;
-  font-size: 12.5px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
   font-weight: 500;
   color: #0b0d11;
   background: var(--accent);
-  border-radius: var(--radius-sm);
-  transition: filter 0.18s ease, opacity 0.18s ease;
+  border-radius: 7px;
+  transition: filter 0.15s ease, opacity 0.15s ease;
 }
 
 .new-btn:hover:not(:disabled) {
@@ -3093,13 +3103,14 @@ onBeforeUnmount(() => {
 .rail-search {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: 0 12px 10px;
-  padding: 6px 9px;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 5px 8px;
   color: var(--text-3);
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: 7px;
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
 
 .rail-search:focus-within {
@@ -3146,40 +3157,57 @@ onBeforeUnmount(() => {
 }
 
 .rail-label {
-  padding: 0 6px 5px;
+  padding: 14px 8px 6px;
   font-size: 10.5px;
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   color: var(--text-3);
-  text-transform: uppercase;
 }
 
 .rail-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 7px 8px;
+  padding: 8px 10px;
   font-size: 12.5px;
   color: var(--text-2);
   text-align: left;
   cursor: pointer;
-  border-radius: 7px;
-  transition: background 0.16s ease, color 0.16s ease;
+  border-radius: 8px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.rail-item + .rail-item {
+  margin-top: 2px;
 }
 
 .rail-item:hover {
-  background: rgba(255, 255, 255, 0.045);
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text);
 }
 
 .rail-item.is-active {
-  color: #fff;
-  background: var(--accent-soft);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.rail-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 16px;
+  background: var(--accent);
+  border-radius: 99px;
+  transform: translateY(-50%);
 }
 
 .rail-item-text {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -3200,7 +3228,7 @@ onBeforeUnmount(() => {
   color: var(--text-3);
   opacity: 0;
   border-radius: 4px;
-  transition: opacity 0.14s ease, color 0.14s ease;
+  transition: opacity 0.15s ease, color 0.15s ease;
 }
 
 .rail-item:hover .del-btn,
@@ -3273,8 +3301,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 12px 20px;
+  gap: 12px;
+  height: 44px;
+  padding: 0 16px;
   background: rgba(11, 13, 17, 0.5);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(6px);
@@ -3291,18 +3320,20 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+  height: 24px;
   max-width: 132px;
-  padding: 4px 9px;
-  font-size: 11.5px;
-  color: var(--text);
+  padding: 0 9px;
+  font-size: 11px;
+  color: var(--text-2);
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--line);
-  border-radius: 7px;
-  transition: border-color 0.16s ease, background 0.16s ease;
+  border-radius: 999px;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
 .mode-btn:hover,
 .mode-btn.is-open {
+  color: var(--text);
   background: rgba(255, 255, 255, 0.07);
   border-color: var(--line-2);
 }
@@ -3345,7 +3376,7 @@ onBeforeUnmount(() => {
   text-align: left;
   border: 1px solid transparent;
   border-radius: 7px;
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .mode-menu-item:hover {
@@ -3409,7 +3440,7 @@ onBeforeUnmount(() => {
   color: var(--text-2);
   text-align: left;
   border-radius: 6px;
-  transition: background 0.16s ease, color 0.16s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .mode-menu-manage:hover {
@@ -3447,61 +3478,65 @@ onBeforeUnmount(() => {
 
 .crumb h2 {
   overflow: hidden;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .tag {
   flex: 0 0 auto;
-  padding: 1px 7px;
-  font-size: 10.5px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 17px;
   color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 99px;
+  background: rgba(61, 220, 151, 0.1);
+  border-radius: 999px;
 }
 
 .top-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .pill {
-  padding: 3px 9px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
   font-size: 11px;
-  color: var(--text-2);
+  color: var(--text-3);
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--line);
-  border-radius: 99px;
+  border-radius: 999px;
 }
 
 .pill.is-warn {
   color: #ffb0b0;
-  border-color: rgba(255, 107, 107, 0.3);
+  border-color: rgba(255, 107, 107, 0.28);
 }
 
 .cap-btn {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 9px;
-  font-size: 11px;
-  color: var(--text-2);
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
   white-space: nowrap;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--line);
-  border-radius: 99px;
-  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .cap-btn:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
-  border-color: var(--line-2);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .cap-btn svg {
@@ -3510,22 +3545,22 @@ onBeforeUnmount(() => {
 }
 
 .cap-kbd {
-  padding: 1px 5px;
-  font-size: 9.5px;
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 15px;
   color: var(--text-3);
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 .icon-btn {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   color: var(--text-3);
-  border-radius: 7px;
-  transition: background 0.16s ease, color 0.16s ease;
+  border-radius: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .icon-btn:hover,
@@ -3545,13 +3580,14 @@ onBeforeUnmount(() => {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 22px 26px;
+  gap: 16px;
+  padding: 18px 20px;
 }
 
 .msg {
   display: flex;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 8px;
   animation: rise 0.24s ease both;
 }
 
@@ -3565,7 +3601,7 @@ onBeforeUnmount(() => {
 .msg.user {
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: 6px;
 }
 
 /* 操作行默认隐藏，悬停消息或用键盘聚焦时显示 */
@@ -3587,19 +3623,19 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   width: min(78%, 620px);
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid var(--line-2);
+  padding: 10px 14px;
+  background: rgba(61, 220, 151, 0.06);
+  border: 1px solid rgba(61, 220, 151, 0.18);
   border-radius: 12px;
 }
 
 .edit-input {
   width: 100%;
   min-height: 64px;
-  padding: 4px 6px;
+  padding: 2px;
   font-family: inherit;
   font-size: 13px;
-  line-height: 1.72;
+  line-height: 1.7;
   color: var(--text);
   background: transparent;
   border: 0;
@@ -3610,7 +3646,7 @@ onBeforeUnmount(() => {
 .edit-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .edit-save,
@@ -3619,7 +3655,7 @@ onBeforeUnmount(() => {
   padding: 0 12px;
   font-size: 11.5px;
   border-radius: 6px;
-  transition: background 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
 .edit-save {
@@ -3650,17 +3686,16 @@ onBeforeUnmount(() => {
   max-width: 78%;
   padding: 10px 14px;
   font-size: 13px;
-  line-height: 1.72;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
   border-radius: 12px;
 }
 
 .msg.user .bubble {
-  color: #eaf7f0;
-  background: linear-gradient(180deg, rgba(61, 220, 151, 0.22), rgba(61, 220, 151, 0.12));
-  border: 1px solid rgba(61, 220, 151, 0.28);
-  border-bottom-right-radius: 4px;
+  color: var(--text);
+  background: rgba(61, 220, 151, 0.1);
+  border: 1px solid rgba(61, 220, 151, 0.16);
 }
 
 .avatar {
@@ -3669,15 +3704,13 @@ onBeforeUnmount(() => {
   place-items: center;
   width: 26px;
   height: 26px;
-  margin-top: 2px;
-  background: var(--accent-soft);
-  border: 1px solid rgba(61, 220, 151, 0.32);
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 7px;
 }
 
 .avatar-core {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   background: var(--accent);
   border-radius: 2px;
   transform: rotate(45deg);
@@ -3686,17 +3719,40 @@ onBeforeUnmount(() => {
 .agent-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  max-width: 84%;
+  max-width: 100%;
 }
 
+/* 助手消息上方角色行：模式与时间，弱化到辅助信息层级 */
+.agent-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.agent-role {
+  font-weight: 500;
+}
+
+.agent-time {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* 助手正文不再用卡片承载，直接落在画布上 */
 .agent-bubble {
   max-width: 100%;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.75;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--line);
-  border-top-left-radius: 4px;
+  background: none;
+  border: 0;
+  border-radius: 0;
 }
 
 .caret {
@@ -3719,10 +3775,10 @@ onBeforeUnmount(() => {
 /* ---------------- 执行轨迹 ---------------- */
 
 .agent-trace {
-  padding: 8px 11px;
-  background: rgba(255, 255, 255, 0.022);
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: 8px;
 }
 
 .at-head {
@@ -3750,7 +3806,7 @@ onBeforeUnmount(() => {
 .at-caret {
   font-size: 10px;
   color: var(--text-3);
-  transition: transform 0.16s ease;
+  transition: transform 0.15s ease;
 }
 
 .at-caret.is-open {
@@ -3877,7 +3933,7 @@ onBeforeUnmount(() => {
   color: #ffd0d0;
   background: rgba(255, 107, 107, 0.18);
   border-radius: 5px;
-  transition: background 0.16s ease;
+  transition: background 0.15s ease;
 }
 
 .retry-btn:hover:not(:disabled) {
@@ -3946,7 +4002,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid var(--line);
   border-radius: 99px;
-  transition: border-color 0.16s ease, color 0.16s ease;
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
 
 .suggest:hover {
@@ -3957,29 +4013,27 @@ onBeforeUnmount(() => {
 /* ---------------- 输入区 ---------------- */
 
 .composer {
-  padding: 10px 20px 16px;
-  border-top: 1px solid var(--line);
+  padding: 6px 20px 14px;
 }
 
 .composer-box {
-  padding: 9px 11px 8px;
+  padding: 10px 12px;
   background: var(--bg-2);
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius);
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  transition: border-color 0.15s ease;
 }
 
 .composer-box:focus-within {
-  border-color: rgba(61, 220, 151, 0.45);
-  box-shadow: 0 0 0 3px rgba(61, 220, 151, 0.08);
+  border-color: rgba(61, 220, 151, 0.35);
 }
 
 .composer-mode {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
-  padding: 0 2px 5px;
+  padding: 0 2px 4px;
   overflow: hidden;
   font-size: 10.5px;
   color: var(--text-3);
@@ -3988,8 +4042,8 @@ onBeforeUnmount(() => {
 
 .composer-mode-name {
   flex: 0 0 auto;
-  font-weight: 600;
-  color: var(--accent);
+  font-weight: 500;
+  color: var(--text-2);
 }
 
 .composer-mode-desc {
@@ -4000,23 +4054,24 @@ onBeforeUnmount(() => {
 .composer-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   padding-bottom: 6px;
 }
 
 .chip {
-  padding: 1px 8px;
-  font-size: 10.5px;
+  padding: 0 7px;
+  font-size: 10px;
+  line-height: 17px;
   color: var(--text-3);
-  background: rgba(255, 255, 255, 0.035);
-  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
 }
 
 .composer-box textarea {
   width: 100%;
-  min-height: 48px;
+  min-height: 44px;
   max-height: 160px;
-  padding: 2px 2px 4px;
+  padding: 0 2px 2px;
   font: inherit;
   font-size: 13px;
   line-height: 1.65;
@@ -4045,16 +4100,15 @@ onBeforeUnmount(() => {
 }
 
 .send-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 13px;
-  font-size: 12.5px;
-  font-weight: 500;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
   color: #07120c;
   background: var(--accent);
-  border-radius: 8px;
-  transition: filter 0.16s ease, opacity 0.16s ease;
+  border-radius: 999px;
+  transition: filter 0.15s ease, opacity 0.15s ease;
 }
 
 .send-btn:hover:not(:disabled) {
@@ -4067,26 +4121,28 @@ onBeforeUnmount(() => {
 }
 
 .send-btn svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
 }
 
 .stop-btn {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
-  padding: 6px 13px;
-  font-size: 12.5px;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 11.5px;
   font-weight: 500;
-  color: #ffd0d0;
-  background: rgba(255, 107, 107, 0.16);
-  border: 1px solid rgba(255, 107, 107, 0.3);
+  color: #ff9a9a;
+  background: transparent;
+  border: 1px solid rgba(255, 107, 107, 0.32);
   border-radius: 8px;
-  transition: background 0.16s ease, opacity 0.16s ease;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
 .stop-btn:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.26);
+  background: rgba(255, 107, 107, 0.12);
 }
 
 .stop-btn:disabled {
@@ -4095,8 +4151,8 @@ onBeforeUnmount(() => {
 }
 
 .stop-icon {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   background: #ff8b8b;
   border-radius: 2px;
 }
@@ -4109,7 +4165,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: var(--inspector-w);
   min-height: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%), var(--bg-1);
+  background: var(--bg-1);
   border-left: 1px solid var(--line);
 }
 
@@ -4117,7 +4173,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 8px 0 12px;
+  height: 32px;
+  padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -4126,6 +4183,7 @@ onBeforeUnmount(() => {
   flex: 1;
   align-items: center;
   gap: 2px;
+  height: 100%;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -4142,9 +4200,10 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
-  padding: 6px 6px 9px 8px;
+  height: 100%;
+  padding: 0 6px;
   color: var(--text-3);
-  transition: color 0.16s ease;
+  transition: color 0.15s ease;
 }
 
 .panel-tab:hover {
@@ -4158,8 +4217,8 @@ onBeforeUnmount(() => {
 .panel-tab.is-active::after {
   content: "";
   position: absolute;
-  left: 6px;
-  right: 6px;
+  left: 4px;
+  right: 4px;
   bottom: 0;
   height: 2px;
   background: var(--accent);
@@ -4167,7 +4226,7 @@ onBeforeUnmount(() => {
 }
 
 .panel-tab-label {
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: inherit;
 }
 
@@ -4179,7 +4238,7 @@ onBeforeUnmount(() => {
   color: var(--text-3);
   border-radius: 4px;
   opacity: 0.55;
-  transition: color 0.14s ease, background 0.14s ease, opacity 0.14s ease;
+  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
 }
 
 .panel-tab:hover .panel-tab-close,
@@ -4194,8 +4253,10 @@ onBeforeUnmount(() => {
 
 .panel-add {
   position: relative;
+  display: flex;
   flex: 0 0 auto;
-  padding-bottom: 5px;
+  align-items: center;
+  height: 100%;
 }
 
 .panel-add-btn {
@@ -4205,7 +4266,7 @@ onBeforeUnmount(() => {
   line-height: 1;
   color: var(--text-3);
   border-radius: 6px;
-  transition: color 0.16s ease, background 0.16s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .panel-add-btn:hover {
@@ -4234,7 +4295,7 @@ onBeforeUnmount(() => {
   padding: 7px 9px;
   text-align: left;
   border-radius: 6px;
-  transition: background 0.14s ease;
+  transition: background 0.15s ease;
 }
 
 .panel-menu-item:hover {
@@ -4262,7 +4323,41 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px 12px 18px;
+  padding: 12px 10px 16px;
+}
+
+/* ---------------- 滚动条：细窄、低对比 ---------------- */
+
+.stream::-webkit-scrollbar,
+.rail-scroll::-webkit-scrollbar,
+.insp-scroll::-webkit-scrollbar,
+.cap-panel::-webkit-scrollbar,
+.cap-result-body::-webkit-scrollbar,
+.flow-side::-webkit-scrollbar,
+.flow-main::-webkit-scrollbar,
+.flow-result-body::-webkit-scrollbar,
+.flow-run-result::-webkit-scrollbar,
+.flow-step-output::-webkit-scrollbar,
+.mode-side::-webkit-scrollbar,
+.mode-main::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.stream::-webkit-scrollbar-thumb,
+.rail-scroll::-webkit-scrollbar-thumb,
+.insp-scroll::-webkit-scrollbar-thumb,
+.cap-panel::-webkit-scrollbar-thumb,
+.cap-result-body::-webkit-scrollbar-thumb,
+.flow-side::-webkit-scrollbar-thumb,
+.flow-main::-webkit-scrollbar-thumb,
+.flow-result-body::-webkit-scrollbar-thumb,
+.flow-run-result::-webkit-scrollbar-thumb,
+.flow-step-output::-webkit-scrollbar-thumb,
+.mode-side::-webkit-scrollbar-thumb,
+.mode-main::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 99px;
 }
 
 /* ---------------- 弹层通用提示（偏好 / 模式 / 工作流复用） ---------------- */
@@ -4341,7 +4436,7 @@ onBeforeUnmount(() => {
   line-height: 1;
   color: var(--text-3);
   border-radius: 6px;
-  transition: color 0.16s ease, background 0.16s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .cap-close:hover {
@@ -4364,7 +4459,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .cap-item:hover {
@@ -4431,7 +4526,7 @@ onBeforeUnmount(() => {
   padding: 2px 0;
   font-size: 10.5px;
   color: var(--text-3);
-  transition: color 0.16s ease;
+  transition: color 0.15s ease;
 }
 
 .cap-back:hover {
@@ -4467,7 +4562,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line);
   border-radius: 7px;
   outline: none;
-  transition: border-color 0.16s ease;
+  transition: border-color 0.15s ease;
 }
 
 .cap-field input:focus,
@@ -4499,7 +4594,7 @@ onBeforeUnmount(() => {
   color: #07120c;
   background: var(--accent);
   border-radius: 8px;
-  transition: filter 0.16s ease, opacity 0.16s ease;
+  transition: filter 0.15s ease, opacity 0.15s ease;
 }
 
 .cap-run:hover:not(:disabled) {
@@ -4666,7 +4761,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid var(--line-2);
   border-radius: 99px;
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .prefs-switch.is-on {
@@ -4682,7 +4777,7 @@ onBeforeUnmount(() => {
   height: 12px;
   background: var(--text-3);
   border-radius: 99px;
-  transition: transform 0.16s ease, background 0.16s ease;
+  transition: transform 0.15s ease, background 0.15s ease;
 }
 
 .prefs-switch.is-on .prefs-knob {
@@ -4709,7 +4804,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line);
   border-radius: 7px;
   outline: none;
-  transition: border-color 0.16s ease;
+  transition: border-color 0.15s ease;
 }
 
 .prefs-field select {
@@ -4750,7 +4845,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--line);
   border-radius: 8px;
-  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 .prefs-cancel:hover {
@@ -4800,7 +4895,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .flow-item:hover {
@@ -4868,7 +4963,7 @@ onBeforeUnmount(() => {
   line-height: 1;
   color: var(--text-3);
   border-radius: 4px;
-  transition: color 0.14s ease, background 0.14s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .flow-del:hover:not(:disabled) {
@@ -4934,7 +5029,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  transition: border-color 0.16s ease, opacity 0.16s ease;
+  transition: border-color 0.15s ease, opacity 0.15s ease;
 }
 
 .flow-step.is-running {
@@ -5010,7 +5105,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   font-size: 10px;
   color: var(--text-3);
-  transition: transform 0.16s ease;
+  transition: transform 0.15s ease;
 }
 
 .flow-step-caret.is-open {
@@ -5037,7 +5132,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 107, 107, 0.12);
   border: 1px solid rgba(255, 107, 107, 0.28);
   border-radius: 8px;
-  transition: background 0.16s ease, opacity 0.16s ease;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
 .flow-stop:hover:not(:disabled) {
@@ -5121,7 +5216,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .flow-run:hover,
@@ -5304,7 +5399,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 107, 107, 0.12);
   border: 1px solid rgba(255, 107, 107, 0.28);
   border-radius: 8px;
-  transition: background 0.16s ease, opacity 0.16s ease;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
 .mode-del:hover:not(:disabled) {

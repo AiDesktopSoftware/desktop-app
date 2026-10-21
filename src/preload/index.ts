@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
+  CustomCapability,
   RagQuery,
   RagResult,
   WorkApi,
@@ -7,6 +8,8 @@ import type {
   WorkCapabilityId,
   WorkCapabilityRunResult,
   WorkChatStartPayload,
+  WorkCustomCapListResult,
+  WorkCustomCapRemoveResult,
   WorkFlowDoneEvent,
   WorkFlowListResult,
   WorkFlowRemoveResult,
@@ -96,7 +99,14 @@ const workApi: WorkApi = {
   },
   flowRuns: () => ipcRenderer.invoke('work:flow:runs') as Promise<WorkFlowRunsResult>,
   onFlowStep: (cb) => subscribe<WorkFlowStepEvent>('work:workflow:step', cb),
-  onFlowDone: (cb) => subscribe<WorkFlowDoneEvent>('work:workflow:done', cb)
+  onFlowDone: (cb) => subscribe<WorkFlowDoneEvent>('work:workflow:done', cb),
+  // 用户自定义 HTTP 能力管理
+  customCapList: () =>
+    ipcRenderer.invoke('work:cap:custom:list') as Promise<WorkCustomCapListResult>,
+  customCapSave: (capability: CustomCapability) =>
+    ipcRenderer.invoke('work:cap:custom:save', { capability }),
+  customCapRemove: (id: string) =>
+    ipcRenderer.invoke('work:cap:custom:remove', { id }) as Promise<WorkCustomCapRemoveResult>
 }
 
 if (process.contextIsolated) {

@@ -244,7 +244,7 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
   // 模式工具为空时 capabilitySchemas 不收窄，这里显式给空数组，即纯对话
   const allowedToolIds = resolveToolIds(mode.tools, preferences.enabledTools)
   const toolSchemas =
-    allowedToolIds.length > 0 ? capabilitySchemas(allowedToolIds) : []
+    allowedToolIds.length > 0 ? await capabilitySchemas(allowedToolIds) : []
 
   const history: LlmAgentMessage[] = options.messages
     .filter((message) => message.content.trim().length > 0)

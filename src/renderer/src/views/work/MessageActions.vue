@@ -121,12 +121,14 @@ onBeforeUnmount(() => {
 .act-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 7px;
+  justify-content: center;
+  gap: 3px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 4px;
   color: var(--text-3);
   border-radius: 6px;
-  transition: background 0.16s ease, color 0.16s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .act-btn:hover:not(:disabled) {
@@ -141,13 +143,13 @@ onBeforeUnmount(() => {
 
 .act-btn svg {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 
 .act-btn.is-danger:hover:not(:disabled) {
   color: #ff9a9a;
-  background: rgba(255, 107, 107, 0.14);
+  background: rgba(255, 107, 107, 0.12);
 }
 
 .act-btn.is-copied,
@@ -156,7 +158,7 @@ onBeforeUnmount(() => {
 }
 
 .act-text {
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
   white-space: nowrap;
 }

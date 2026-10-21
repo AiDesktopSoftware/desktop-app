@@ -6,6 +6,7 @@ import type { KbDocument } from '../../../../main/work/kb/types'
 import type { WorkPreferences } from '../../../../main/work/config'
 import type { WorkMode } from '../../../../main/work/modes/types'
 import type { WorkflowDefinition, WorkflowRun } from '../../../../main/work/workflow/types'
+import type { CustomCapability } from '../../../../main/work/capabilities/custom'
 
 export type {
   RagChunk,
@@ -16,6 +17,8 @@ export type {
 } from '../../../../main/work/rag/types'
 
 export type { KbChunk, KbDocument, KbIndex } from '../../../../main/work/kb/types'
+
+export type { CustomCapability }
 
 export type { WorkPreferences }
 
@@ -33,15 +36,8 @@ export type {
 export type WorkRole = 'user' | 'assistant'
 export type WorkToolStatus = 'running' | 'done' | 'failed'
 
-/** 与主进程能力注册表一致的 7 个能力 id */
-export type WorkCapabilityId =
-  | 'web_search'
-  | 'fetch_url'
-  | 'list_files'
-  | 'read_file'
-  | 'write_file'
-  | 'kb_search'
-  | 'run_command'
+/** 能力 id：内置 7 个 + 用户自定义 HTTP 能力（custom_ 前缀） */
+export type WorkCapabilityId = string
 
 export type WorkCapabilityPermission = 'read' | 'write' | 'exec'
 
@@ -249,6 +245,19 @@ export interface WorkFlowDoneEvent {
   message?: string
 }
 
+// ---------------- 用户自定义 HTTP 能力 ----------------
+
+export interface WorkCustomCapListResult {
+  ok: boolean
+  capabilities: CustomCapability[]
+  message?: string
+}
+
+export interface WorkCustomCapRemoveResult {
+  ok: boolean
+  message?: string
+}
+
 /** 预加载脚本暴露到 window.workApi 的接口 */
 export interface WorkApi {
   chatStart(payload: WorkChatStartPayload): Promise<{ ok: boolean; message?: string }>
@@ -288,4 +297,8 @@ export interface WorkApi {
   flowRuns(): Promise<WorkFlowRunsResult>
   onFlowStep(cb: (payload: WorkFlowStepEvent) => void): () => void
   onFlowDone(cb: (payload: WorkFlowDoneEvent) => void): () => void
+  // 用户自定义 HTTP 能力管理
+  customCapList(): Promise<WorkCustomCapListResult>
+  customCapSave(capability: CustomCapability): Promise<{ ok: boolean; capability?: CustomCapability; message?: string }>
+  customCapRemove(id: string): Promise<WorkCustomCapRemoveResult>
 }

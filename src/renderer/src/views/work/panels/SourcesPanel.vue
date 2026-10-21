@@ -61,13 +61,13 @@ function fileName(path: string): string {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 2px 8px;
+  padding: 0 2px 7px;
 }
 
 .panel-head h4 {
   font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--text-2);
 }
 
@@ -81,9 +81,9 @@ function fileName(path: string): string {
   flex-direction: column;
   gap: 5px;
   padding: 14px 12px;
-  background: rgba(255, 255, 255, 0.022);
-  border: 1px dashed var(--line-2);
-  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.012);
+  border: 1px dashed var(--line);
+  border-radius: 9px;
 }
 
 .panel-empty p {
@@ -101,7 +101,7 @@ function fileName(path: string): string {
 .evidence {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
   padding: 0 2px;
   list-style: none;
 }
@@ -115,8 +115,8 @@ function fileName(path: string): string {
   text-decoration: none;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--line);
-  border-radius: 7px;
-  transition: background 0.16s ease, border-color 0.16s ease;
+  border-radius: 9px;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .evidence a:hover {

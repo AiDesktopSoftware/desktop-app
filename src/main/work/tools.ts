@@ -2,6 +2,8 @@ import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { executeCustomCapability } from './capabilities/custom'
+import { getCustomCapability } from './capabilities/custom'
 import { searchKb } from './kb/search'
 import { loadIndex } from './kb/store'
 
@@ -580,8 +582,12 @@ export async function executeTool(
         return await runCommand(args, signal)
       case 'kb_search':
         return await kbSearch(args)
-      default:
+      default: {
+        // 内置工具没命中：尝试用户自定义 HTTP 能力
+        const custom = await getCustomCapability(name)
+        if (custom) return await executeCustomCapability(name, args, signal)
         return { ok: false, content: `未知工具：${name || '(空)'}` }
+      }
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
