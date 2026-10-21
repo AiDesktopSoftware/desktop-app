@@ -3266,6 +3266,10 @@ onBeforeUnmount(() => {
 }
 
 .topbar {
+  position: relative;
+  /* 顶栏有 backdrop-filter 会形成独立层叠上下文，显式抬高整层，
+     否则模式下拉菜单会被下方消息流盖住，文字穿透 */
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
