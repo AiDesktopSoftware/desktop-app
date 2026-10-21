@@ -1,6 +1,6 @@
 import { dialog, ipcMain, type WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { runAgent } from './agent'
+import { runAgent, resolveApproval } from './agent'
 import { capabilityMetadata, getCapability } from './capabilities'
 import {
   listCustomCapabilities,
@@ -586,6 +586,19 @@ export function registerWorkIpc(): void {
       } catch (error) {
         return { ok: false, message: `导出失败：${errorDetail(error)}` }
       }
+    }
+  )
+
+  // ---------------- 工具审批回传 ----------------
+
+  ipcMain.handle(
+    'work:tool:approve:result',
+    async (_event, payload: { requestId?: unknown; approved?: unknown }) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : ''
+      const approved = Boolean(payload?.approved)
+      if (!requestId) return { ok: false }
+      resolveApproval(requestId, approved)
+      return { ok: true }
     }
   )
 }

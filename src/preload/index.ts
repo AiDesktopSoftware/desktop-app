@@ -100,6 +100,14 @@ const workApi: WorkApi = {
   flowRuns: () => ipcRenderer.invoke('work:flow:runs') as Promise<WorkFlowRunsResult>,
   onFlowStep: (cb) => subscribe<WorkFlowStepEvent>('work:workflow:step', cb),
   onFlowDone: (cb) => subscribe<WorkFlowDoneEvent>('work:workflow:done', cb),
+  // 工具审批（L1-1）
+  onToolApprove: (cb) => {
+    const handler = (_evt: Electron.IpcRendererEvent, payload: { requestId: string; toolName: string; args: Record<string, unknown>; reason: string }) => cb(payload)
+    ipcRenderer.on('work:tool:approve', handler)
+    return () => ipcRenderer.removeListener('work:tool:approve', handler)
+  },
+  toolApproveResult: (requestId: string, approved: boolean) =>
+    ipcRenderer.invoke('work:tool:approve:result', { requestId, approved }),
   // 用户自定义 HTTP 能力管理
   customCapList: () =>
     ipcRenderer.invoke('work:cap:custom:list') as Promise<WorkCustomCapListResult>,

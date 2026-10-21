@@ -6,7 +6,7 @@ import {
   type LlmToolCall
 } from './llm'
 import { CAPABILITIES, capabilitySchemas } from './capabilities'
-import { getPreferences } from './config'
+import { getPreferences, type WorkPreferences } from './config'
 import { loadIndex } from './kb/store'
 import { getMode } from './modes/store'
 import type { WorkMode } from './modes/types'
@@ -85,6 +85,88 @@ interface ToolEventPayload {
   args: Record<string, unknown>
   status: 'running' | 'done' | 'failed'
   output?: string
+}
+
+// -------- 工具审批（L1-1）--------
+
+export interface ApprovalRequest {
+  requestId: string
+  toolName: string
+  args: Record<string, unknown>
+  reason: string
+}
+
+interface PendingApproval {
+  resolve: (approved: boolean) => void
+  timeout: NodeJS.Timeout
+}
+
+/** 等待用户审批的 Promise 表（key = requestId） */
+const pendingApprovals = new Map<string, PendingApproval>()
+
+/** 危险工具列表：这些工具可能修改文件或执行命令 */
+const DANGEROUS_TOOLS = new Set(['write_file', 'run_command', 'run_shell'])
+
+/**
+ * 请求用户审批工具调用。
+ * - auto 模式直接返回 true
+ * - deny 模式直接返回 false
+ * - ask 模式通过 send 发事件，等待渲染层回传（60s 超时自动 deny）
+ */
+async function askToolApproval(
+  requestId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  policy: WorkPreferences['approvalPolicy'],
+  send: AgentSend,
+  signal?: AbortSignal
+): Promise<boolean> {
+  if (policy === 'auto') return true
+  if (policy === 'deny') return false
+  // ask 模式：非危险工具自动放行
+  if (!DANGEROUS_TOOLS.has(toolName)) return true
+
+  const reason =
+    toolName === 'write_file'
+      ? `将写入文件：${String(args.path ?? '(未知路径)')}`
+      : `将执行命令：${String(args.command ?? '(未知命令)').slice(0, 80)}`
+
+  return new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingApprovals.delete(requestId)
+      resolve(false) // 60s 超时自动 deny
+    }, 60_000)
+
+    pendingApprovals.set(requestId, { resolve, timeout })
+
+    // 用户中止整个请求时，直接 deny
+    if (signal) {
+      const onAbort = () => {
+        if (pendingApprovals.has(requestId)) {
+          clearTimeout(timeout)
+          pendingApprovals.delete(requestId)
+          resolve(false)
+        }
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    send('work:tool:approve', {
+      requestId,
+      toolName,
+      args,
+      reason
+    } satisfies ApprovalRequest)
+  })
+}
+
+/** 渲染层回传审批结果时调用 */
+export function resolveApproval(requestId: string, approved: boolean): void {
+  const pending = pendingApprovals.get(requestId)
+  if (!pending) return
+  clearTimeout(pending.timeout)
+  pendingApprovals.delete(requestId)
+  pending.resolve(approved)
 }
 
 /** 证据来源：联网来源带 url，本地资料带 path，至少有一个 */
@@ -345,7 +427,32 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
         }
         send('work:agent:tool', running)
 
-        const outcome = parsed.ok
+        // L1-1: 工具审批（ask 模式下危险操作需要用户确认）
+        let outcome: { ok: boolean; content: string }
+        if (parsed.ok && preferences.approvalPolicy === 'ask' && DANGEROUS_TOOLS.has(name)) {
+          const approved = await askToolApproval(
+            `${requestId}:${call.id}`,
+            name,
+            args,
+            preferences.approvalPolicy,
+            send,
+            signal
+          )
+          if (!approved) {
+            outcome = { ok: false, content: `用户拒绝了工具调用：${name}` }
+            send('work:agent:tool', {
+              requestId,
+              id: call.id,
+              name,
+              args,
+              status: 'failed' as const,
+              output: outcome.content
+            })
+            continue
+          }
+        }
+
+        outcome = parsed.ok
           ? await executeTool(name, args, signal)
           : { ok: false, content: '工具参数不是合法的 JSON 对象' }
         const finished: ToolEventPayload = {

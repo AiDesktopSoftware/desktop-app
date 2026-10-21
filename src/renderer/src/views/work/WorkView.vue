@@ -228,6 +228,38 @@ const currentRequestId = ref('')
 
 const pendingDeleteId = ref('')
 const sessionMenuId = ref('')  // 当前弹出菜单所属的 session id；空串表示菜单关闭
+
+// ---- 工具审批弹窗（L1-1）----
+interface ToolApproveRequest {
+  requestId: string
+  toolName: string
+  args: Record<string, unknown>
+  reason: string
+}
+const approveQueue = ref<ToolApproveRequest[]>([])
+const approveAutoAllow = ref(false) // 本会话内后续危险操作自动批准
+
+function handleToolApprove(req: ToolApproveRequest): void {
+  if (approveAutoAllow.value) {
+    void api.toolApproveResult(req.requestId, true)
+    return
+  }
+  approveQueue.value.push(req)
+}
+
+function resolveApprove(requestId: string, approved: boolean): void {
+  approveQueue.value = approveQueue.value.filter((r) => r.requestId !== requestId)
+  void api.toolApproveResult(requestId, approved)
+}
+
+function approveAllAuto(): void {
+  approveAutoAllow.value = true
+  // 队列里还没处理的全部自动放行
+  for (const req of approveQueue.value) {
+    void api.toolApproveResult(req.requestId, true)
+  }
+  approveQueue.value = []
+}
 const streamEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 
@@ -316,7 +348,8 @@ const DEFAULT_PREFS: WorkPreferences = {
   defaultProvider: 'local',
   topK: 5,
   temperature: 0.4,
-  extraSystemPrompt: ''
+  extraSystemPrompt: '',
+  approvalPolicy: 'auto'
 }
 const prefs = ref<WorkPreferences>({ ...DEFAULT_PREFS })
 const prefsDraft = ref<WorkPreferences>({ ...DEFAULT_PREFS })
@@ -373,6 +406,7 @@ let offTool: (() => void) | undefined
 let offEvidence: (() => void) | undefined
 let offFlowStep: (() => void) | undefined
 let offFlowDone: (() => void) | undefined
+let offToolApprove: (() => void) | undefined
 
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeSessionId.value) ?? null
@@ -2297,6 +2331,7 @@ onMounted(async () => {
     flowRunId.value = ''
     void refreshFlowRuns()
   })
+  offToolApprove = api.onToolApprove((req) => handleToolApprove(req))
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('click', onWindowClick)
 
@@ -2355,6 +2390,7 @@ onBeforeUnmount(() => {
   offEvidence?.()
   offFlowStep?.()
   offFlowDone?.()
+  offToolApprove?.()
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('click', onWindowClick)
   activeResizeCleanup?.()
@@ -3578,6 +3614,37 @@ onBeforeUnmount(() => {
               <span class="palette-hint">{{ cmd.hint }}</span>
             </div>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 工具审批弹窗（L1-1）— Agent 要执行危险操作前弹出来让用户确认 -->
+    <Teleport to="body">
+      <div v-if="approveQueue.length > 0" class="approve-mask">
+        <div class="approve-card">
+          <div class="approve-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <div class="approve-title">Agent 请求审批</div>
+            <div class="approve-count" v-if="approveQueue.length > 1">还有 {{ approveQueue.length - 1 }} 个排队中</div>
+          </div>
+          <template v-for="(req, idx) in approveQueue.slice(0, 1)" :key="req.requestId">
+            <div class="approve-body">
+              <div class="approve-reason">{{ req.reason }}</div>
+              <div class="approve-tool">
+                <span class="approve-tool-name">{{ req.toolName }}</span>
+                <pre class="approve-tool-args">{{ JSON.stringify(req.args, null, 2).slice(0, 400) }}</pre>
+              </div>
+            </div>
+            <div class="approve-actions">
+              <button class="approve-btn deny" @click="resolveApprove(req.requestId, false)">拒绝</button>
+              <button class="approve-btn allow-once" @click="resolveApprove(req.requestId, true)">仅本次允许</button>
+              <button class="approve-btn allow-all" @click="approveAllAuto">本会话自动允许后续操作</button>
+            </div>
+          </template>
         </div>
       </div>
     </Teleport>
@@ -6341,5 +6408,129 @@ onBeforeUnmount(() => {
 .palette-hint {
   font-size: 10px;
   color: var(--text-3);
+}
+
+/* ---- 工具审批弹窗 ---- */
+.approve-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 8vh;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  animation: palette-in 0.15s ease-out;
+}
+.approve-card {
+  width: 460px;
+  background: var(--bg-2);
+  border: 1px solid rgba(192, 140, 70, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+.approve-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(192, 140, 70, 0.1);
+  border-bottom: 1px solid var(--line);
+}
+.approve-head svg {
+  width: 16px;
+  height: 16px;
+  color: #d4a76a;
+  flex: 0 0 auto;
+}
+.approve-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8c99a;
+  flex: 1;
+}
+.approve-count {
+  font-size: 10px;
+  color: var(--text-3);
+}
+.approve-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.approve-reason {
+  font-size: 11.5px;
+  color: var(--text);
+  line-height: 1.6;
+}
+.approve-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.approve-tool-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--lime);
+  letter-spacing: 0.03em;
+}
+.approve-tool-args {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-2);
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: inherit;
+}
+.approve-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+}
+.approve-btn {
+  flex: 1;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.approve-btn.deny {
+  color: #d48b8b;
+  background: rgba(192, 106, 106, 0.12);
+  border-color: rgba(192, 106, 106, 0.35);
+}
+.approve-btn.deny:hover {
+  background: rgba(192, 106, 106, 0.22);
+  border-color: rgba(192, 106, 106, 0.55);
+}
+.approve-btn.allow-once {
+  color: var(--lime);
+  background: rgba(110, 180, 100, 0.12);
+  border-color: rgba(110, 180, 100, 0.35);
+}
+.approve-btn.allow-once:hover {
+  background: rgba(110, 180, 100, 0.22);
+  border-color: rgba(110, 180, 100, 0.55);
+}
+.approve-btn.allow-all {
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--line);
+}
+.approve-btn.allow-all:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
 }
 </style>

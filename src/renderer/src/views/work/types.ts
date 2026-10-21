@@ -305,4 +305,7 @@ export interface WorkApi {
   customCapRemove(id: string): Promise<WorkCustomCapRemoveResult>
   // 文件导出（主进程弹保存对话框 + 写文件）
   workExport(content: string, defaultName?: string): Promise<{ ok: boolean; path?: string; message?: string }>
+  // 工具审批（L1-1）
+  onToolApprove(cb: (payload: { requestId: string; toolName: string; args: Record<string, unknown>; reason: string }) => void): () => void
+  toolApproveResult(requestId: string, approved: boolean): Promise<{ ok: boolean }>
 }

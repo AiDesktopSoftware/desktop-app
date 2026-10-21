@@ -21,6 +21,8 @@ export interface WorkPreferences {
   topK: number
   temperature: number
   extraSystemPrompt: string
+  /** 写文件/跑命令等危险操作的审批策略 */
+  approvalPolicy: 'auto' | 'ask' | 'deny'
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com'
@@ -104,7 +106,8 @@ function defaultPreferences(): WorkPreferences {
     defaultProvider: 'local',
     topK: DEFAULT_TOP_K,
     temperature: DEFAULT_TEMPERATURE,
-    extraSystemPrompt: ''
+    extraSystemPrompt: '',
+    approvalPolicy: 'auto'
   }
 }
 
@@ -146,7 +149,13 @@ function normalizePreferences(input: unknown): WorkPreferences {
   const extraSystemPrompt =
     typeof raw.extraSystemPrompt === 'string' ? raw.extraSystemPrompt : defaults.extraSystemPrompt
 
-  return { enabledTools, defaultProvider, topK, temperature, extraSystemPrompt }
+  const policy = raw.approvalPolicy
+  const approvalPolicy =
+    typeof policy === 'string' && ['auto', 'ask', 'deny'].includes(policy)
+      ? (policy as WorkPreferences['approvalPolicy'])
+      : defaults.approvalPolicy
+
+  return { enabledTools, defaultProvider, topK, temperature, extraSystemPrompt, approvalPolicy }
 }
 
 /** 读取偏好设置：文件缺失或字段非法时按默认值补齐 */
