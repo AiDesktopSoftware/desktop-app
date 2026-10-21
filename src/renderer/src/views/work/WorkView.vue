@@ -1678,7 +1678,8 @@ async function savePrefs(): Promise<void> {
       defaultProvider: draft.defaultProvider,
       topK: clampInput(Number(draft.topK), 1, 10, 5),
       temperature: clampInput(Number(draft.temperature), 0, 1, 0.4),
-      extraSystemPrompt: draft.extraSystemPrompt
+      extraSystemPrompt: draft.extraSystemPrompt,
+      approvalPolicy: draft.approvalPolicy
     })
     if (!result.ok || !result.preferences) {
       prefsError.value = result.message || '保存偏好设置失败'
@@ -2976,6 +2977,16 @@ onBeforeUnmount(() => {
               />
             </label>
           </div>
+
+          <label class="prefs-field">
+            <span class="prefs-label">危险操作审批</span>
+            <select v-model="prefsDraft.approvalPolicy">
+              <option value="auto">自动执行（推荐）</option>
+              <option value="ask">每次询问</option>
+              <option value="deny">永远拒绝</option>
+            </select>
+            <span class="prefs-hint">控制 Agent 写文件、执行命令等操作前是否弹审批确认</span>
+          </label>
 
           <label class="prefs-field">
             <span class="prefs-label">自定义提示词</span>
