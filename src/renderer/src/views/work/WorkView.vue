@@ -244,6 +244,65 @@ function setEditTextarea(el: unknown): void {
 // 能力面板（Ctrl + K）：列表 -> 参数表单 -> 执行结果
 const capabilities = ref<WorkCapability[]>([])
 const capOpen = ref(false)
+
+// ---- 命令面板 Ctrl+Shift+P ----
+interface CommandItem {
+  id: string
+  label: string
+  hint?: string
+  group: string
+  run: () => void
+}
+const paletteOpen = ref(false)
+const paletteQuery = ref('')
+const paletteIndex = ref(0)
+const paletteInputRef = ref<HTMLInputElement | null>(null)
+
+// 打开命令面板后自动 focus 输入框
+watch(paletteOpen, (open) => {
+  if (open) {
+    void nextTick(() => paletteInputRef.value?.focus())
+  }
+})
+
+/** 按当前状态动态生成命令列表 */
+function buildCommands(): CommandItem[] {
+  const cmds: CommandItem[] = [
+    { id: 'new-session', label: '新建会话', hint: 'Ctrl + N', group: '会话', run: () => newSession() },
+    { id: 'switch-mode', label: '切换模式…', group: '会话', run: () => { modeMenuOpen.value = true; paletteOpen.value = false } },
+    { id: 'export-session', label: '导出当前会话', group: '会话', run: () => { activeSession.value && exportSession(activeSession.value.id) } },
+    { id: 'import-kb', label: '导入知识库文档', group: '知识', run: () => void importKb() },
+    { id: 'toggle-caps', label: '打开能力面板', hint: 'Ctrl + K', group: '能力', run: () => { paletteOpen.value = false; toggleCaps() } },
+    { id: 'manage-custom', label: '管理自定义 HTTP 能力', group: '能力', run: () => { paletteOpen.value = false; activatePanel('custom-caps') } },
+    { id: 'run-workflow', label: '运行工作流…', group: '工作流', run: () => { paletteOpen.value = false; openFlows() } },
+    { id: 'open-prefs', label: '偏好设置', hint: 'Ctrl + ,', group: '设置', run: () => { paletteOpen.value = false; openPrefs() } }
+  ]
+  return cmds
+}
+
+const paletteFiltered = computed(() => {
+  const q = paletteQuery.value.trim().toLowerCase()
+  if (!q) return buildCommands()
+  return buildCommands().filter((c) =>
+    c.label.toLowerCase().includes(q) ||
+    c.group.toLowerCase().includes(q) ||
+    (c.hint ?? '').toLowerCase().includes(q)
+  )
+})
+
+function openPalette(): void {
+  paletteQuery.value = ''
+  paletteIndex.value = 0
+  paletteOpen.value = true
+}
+function closePalette(): void {
+  paletteOpen.value = false
+}
+function runPaletteCommand(cmd: CommandItem): void {
+  paletteOpen.value = false
+  paletteQuery.value = ''
+  cmd.run()
+}
 const capSelected = ref<WorkCapability | null>(null)
 const capArgs = ref<Record<string, string>>({})
 const capRunning = ref(false)
@@ -1995,6 +2054,41 @@ function onWindowClick(event: MouseEvent): void {
 }
 
 function onGlobalKeydown(event: KeyboardEvent): void {
+  // 命令面板 Ctrl+Shift+P（Trae 风格）
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'p') {
+    event.preventDefault()
+    if (paletteOpen.value) closePalette()
+    else openPalette()
+    return
+  }
+
+  // 命令面板已打开时，拦截方向键和 Enter
+  if (paletteOpen.value) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closePalette()
+      return
+    }
+    const total = paletteFiltered.value.length
+    if (total === 0) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      paletteIndex.value = (paletteIndex.value + 1) % total
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      paletteIndex.value = (paletteIndex.value - 1 + total) % total
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const cmd = paletteFiltered.value[paletteIndex.value]
+      if (cmd) runPaletteCommand(cmd)
+      return
+    }
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
     if (prefsOpen.value) closePrefs()
@@ -3409,6 +3503,46 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- 命令面板 Ctrl+Shift+P（Trae 风格） -->
+    <Teleport to="body">
+      <div v-if="paletteOpen" class="palette-mask" @click.self="closePalette">
+        <div class="palette">
+          <div class="palette-head">
+            <svg class="palette-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              ref="paletteInputRef"
+              v-model="paletteQuery"
+              class="palette-input"
+              placeholder="输入命令名…"
+              @keydown.enter.prevent="paletteFiltered[paletteIndex] && runPaletteCommand(paletteFiltered[paletteIndex])"
+              @keydown.escape.prevent="closePalette"
+              @keydown.arrow-down.prevent="paletteIndex = (paletteIndex + 1) % Math.max(paletteFiltered.length, 1)"
+              @keydown.arrow-up.prevent="paletteIndex = (paletteIndex - 1 + Math.max(paletteFiltered.length, 1)) % Math.max(paletteFiltered.length, 1)"
+            />
+            <span class="palette-kbd">Ctrl+Shift+P</span>
+          </div>
+          <div class="palette-body">
+            <div v-if="paletteFiltered.length === 0" class="palette-empty">没找到匹配的命令</div>
+            <div
+              v-for="(cmd, idx) in paletteFiltered"
+              :key="cmd.id"
+              class="palette-item"
+              :class="{ 'is-active': idx === paletteIndex }"
+              @mouseenter="paletteIndex = idx"
+              @click="runPaletteCommand(cmd)"
+            >
+              <span class="palette-group">{{ cmd.group }}</span>
+              <span class="palette-label">{{ cmd.label }}</span>
+              <span class="palette-hint">{{ cmd.hint }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -6033,5 +6167,113 @@ onBeforeUnmount(() => {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
+}
+
+/* ---- 命令面板 Ctrl+Shift+P ---- */
+.palette-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+  animation: palette-in 0.15s ease-out;
+}
+@keyframes palette-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.palette {
+  width: 480px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  animation: palette-pop 0.18s ease-out;
+}
+@keyframes palette-pop {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.palette-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.palette-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+.palette-input {
+  flex: 1;
+  padding: 5px 0;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--text-3);
+}
+.palette-kbd {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.palette-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+.palette-empty {
+  padding: 20px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+}
+.palette-item {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.palette-item:hover,
+.palette-item.is-active {
+  background: rgba(255, 255, 255, 0.08);
+}
+.palette-group {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.03em;
+}
+.palette-label {
+  font-size: 12px;
+  color: var(--text);
+}
+.palette-hint {
+  font-size: 10px;
+  color: var(--text-3);
 }
 </style>
