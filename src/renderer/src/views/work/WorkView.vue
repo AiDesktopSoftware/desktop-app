@@ -1976,6 +1976,31 @@ async function saveFlowDraft(): Promise<void> {
   }
 }
 
+// ---------------- L2-3: 工作流单节点试运行 ----------------
+
+/** 试运行结果缓存：key=step.id，value={ ok, content, loading } */
+const stepTrialResults = ref<Record<string, { ok: boolean; content: string; loading?: boolean }>>({})
+
+/** 哪些节点类型可以直接试运行（有对应的内置能力） */
+const TRIALABLE_NODE_TYPES = new Set(['kb_search', 'web_search', 'fetch_url'])
+
+async function runStepTrial(stepId: string, stepType: string, args: Record<string, string>): Promise<void> {
+  if (!TRIALABLE_NODE_TYPES.has(stepType)) return
+  stepTrialResults.value[stepId] = { ok: false, content: '运行中…', loading: true }
+  try {
+    const result = await api.runCapability(stepType, args as Record<string, unknown>)
+    stepTrialResults.value[stepId] = {
+      ok: result.ok,
+      content: result.content.slice(0, 1200)
+    }
+  } catch (error) {
+    stepTrialResults.value[stepId] = {
+      ok: false,
+      content: error instanceof Error ? error.message : String(error)
+    }
+  }
+}
+
 // ---------------- P2: Agent 轨迹冻结为工作流 ----------------
 
 /** 把助手消息里的工具调用轨迹转成 WorkflowDefinition 并保存 */
@@ -3431,6 +3456,13 @@ onBeforeUnmount(() => {
                     <div class="flow-edit-step-head">
                       <span class="flow-edit-step-num">{{ idx + 1 }}</span>
                       <span class="flow-edit-step-type">{{ FLOW_NODE_TYPES.find(n => n.type === step.type)?.label || step.type }}</span>
+                      <button
+                        v-if="['kb_search','web_search','fetch_url'].includes(step.type)"
+                        class="flow-edit-trial"
+                        :disabled="stepTrialResults[step.id]?.loading"
+                        :title="stepTrialResults[step.id]?.loading ? '运行中…' : '试运行这个节点'"
+                        @click="runStepTrial(step.id, step.type, step.args)"
+                      >试运行</button>
                       <button class="flow-edit-move" :disabled="idx === 0" @click="moveFlowStepInDraft(idx, -1)">↑</button>
                       <button class="flow-edit-move" :disabled="idx === flowDraft.steps.length - 1" @click="moveFlowStepInDraft(idx, 1)">↓</button>
                       <button class="flow-edit-del" @click="removeFlowStepFromDraft(idx)">×</button>
@@ -3446,6 +3478,10 @@ onBeforeUnmount(() => {
                         />
                         <input v-else v-model="step.args[field.key]" type="text" :placeholder="field.key" />
                       </div>
+                    </div>
+                    <!-- 试运行结果 -->
+                    <div v-if="stepTrialResults[step.id]" class="flow-edit-trial-result" :class="{ 'is-ok': stepTrialResults[step.id].ok, 'is-err': !stepTrialResults[step.id].ok }">
+                      <pre>{{ stepTrialResults[step.id].content }}</pre>
                     </div>
                   </div>
                 </div>
@@ -5680,6 +5716,34 @@ onBeforeUnmount(() => {
   border: 1px solid transparent; border-radius: 3px; cursor: pointer;
 }
 .flow-edit-del:hover { color: #c06a6a; border-color: rgba(192,106,106,0.4); }
+
+.flow-edit-trial {
+  padding: 2px 7px; font-size: 10px; color: var(--lime);
+  background: rgba(110, 180, 100, 0.1);
+  border: 1px solid rgba(110, 180, 100, 0.35); border-radius: 3px;
+  cursor: pointer; white-space: nowrap;
+}
+.flow-edit-trial:hover:not(:disabled) { background: rgba(110, 180, 100, 0.2); }
+.flow-edit-trial:disabled { opacity: 0.5; cursor: default; }
+
+.flow-edit-trial-result {
+  margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+  font-size: 10.5px; overflow: auto; max-height: 180px;
+}
+.flow-edit-trial-result.is-ok {
+  background: rgba(110, 180, 100, 0.08);
+  border: 1px solid rgba(110, 180, 100, 0.25);
+  color: var(--text-2);
+}
+.flow-edit-trial-result.is-err {
+  background: rgba(192, 106, 106, 0.08);
+  border: 1px solid rgba(192, 106, 106, 0.25);
+  color: #d48b8b;
+}
+.flow-edit-trial-result pre {
+  margin: 0; white-space: pre-wrap; word-break: break-all;
+  font-family: inherit;
+}
 
 .flow-edit-step-fields {
   display: flex; flex-direction: column; gap: 4px;
