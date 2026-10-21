@@ -16,6 +16,18 @@ export interface WorkMode {
   ragProvider: 'local' | 'cloud' | 'both'
   /** 1-10 */
   topK: number
+  /** Agent 最大轮数，2-20 */
+  maxRounds: number
+  /** 单次请求最多工具调用次数，1-30 */
+  maxTools: number
+  /** 携带最近多少条历史消息，0-30；0 表示不带历史 */
+  historyMessages: number
+  /** 每条历史消息截断字符数，500-20000 */
+  contextChars: number
+  /** 输出格式约束 */
+  outputStyle: 'free' | 'bullets' | 'table' | 'report'
+  /** 引用严格度 */
+  citationStrict: 'required' | 'preferred' | 'off'
   createdAt: number
   updatedAt: number
 }

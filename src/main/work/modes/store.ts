@@ -12,6 +12,28 @@ const MIN_TOP_K = 1
 const MAX_TOP_K = 10
 const PROVIDERS: WorkMode['ragProvider'][] = ['local', 'cloud', 'both']
 
+// 执行控制字段的取值范围：超出范围收敛，非法值回落到默认
+const MIN_ROUNDS = 2
+const MAX_ROUNDS = 20
+const MIN_TOOLS_CALL = 1
+const MAX_TOOLS_CALL = 30
+const MIN_HISTORY = 0
+const MAX_HISTORY = 30
+const MIN_CONTEXT = 500
+const MAX_CONTEXT = 20000
+const OUTPUT_STYLES: WorkMode['outputStyle'][] = ['free', 'bullets', 'table', 'report']
+const CITATION_LEVELS: WorkMode['citationStrict'][] = ['required', 'preferred', 'off']
+
+/** 旧配置缺少执行控制字段时的兜底值，与「普通问答」的内置默认保持一致 */
+const EXECUTION_DEFAULTS = {
+  maxRounds: 4,
+  maxTools: 4,
+  historyMessages: 10,
+  contextChars: 6000,
+  outputStyle: 'free' as WorkMode['outputStyle'],
+  citationStrict: 'off' as WorkMode['citationStrict']
+}
+
 /** 固定时间戳：内置模式不参与排序，也不允许被修改 */
 const BUILTIN_TIME = 0
 
@@ -31,6 +53,12 @@ const BUILTIN_MODES: WorkMode[] = [
     temperature: 0.6,
     ragProvider: 'local',
     topK: 5,
+    maxRounds: 4,
+    maxTools: 4,
+    historyMessages: 10,
+    contextChars: 6000,
+    outputStyle: 'free',
+    citationStrict: 'off',
     createdAt: BUILTIN_TIME,
     updatedAt: BUILTIN_TIME
   },
@@ -51,6 +79,12 @@ const BUILTIN_MODES: WorkMode[] = [
     temperature: 0.3,
     ragProvider: 'both',
     topK: 8,
+    maxRounds: 10,
+    maxTools: 14,
+    historyMessages: 10,
+    contextChars: 6000,
+    outputStyle: 'report',
+    citationStrict: 'required',
     createdAt: BUILTIN_TIME,
     updatedAt: BUILTIN_TIME
   },
@@ -71,6 +105,12 @@ const BUILTIN_MODES: WorkMode[] = [
     temperature: 0.2,
     ragProvider: 'local',
     topK: 5,
+    maxRounds: 8,
+    maxTools: 16,
+    historyMessages: 12,
+    contextChars: 8000,
+    outputStyle: 'free',
+    citationStrict: 'off',
     createdAt: BUILTIN_TIME,
     updatedAt: BUILTIN_TIME
   },
@@ -90,6 +130,12 @@ const BUILTIN_MODES: WorkMode[] = [
     temperature: 0.2,
     ragProvider: 'local',
     topK: 5,
+    maxRounds: 6,
+    maxTools: 8,
+    historyMessages: 8,
+    contextChars: 6000,
+    outputStyle: 'bullets',
+    citationStrict: 'required',
     createdAt: BUILTIN_TIME,
     updatedAt: BUILTIN_TIME
   }
@@ -134,6 +180,59 @@ function normalizeTopK(input: unknown): number {
   return clampNumber(Math.round(value), MIN_TOP_K, MAX_TOP_K)
 }
 
+/** 数值越界收敛到范围内，缺失或非法回落到默认值 */
+function normalizeRange(input: unknown, min: number, max: number, fallback: number): number {
+  const value = typeof input === 'number' && Number.isFinite(input) ? input : fallback
+  return clampNumber(Math.round(value), min, max)
+}
+
+function normalizeOutputStyle(input: unknown): WorkMode['outputStyle'] {
+  return typeof input === 'string' && OUTPUT_STYLES.includes(input as WorkMode['outputStyle'])
+    ? (input as WorkMode['outputStyle'])
+    : EXECUTION_DEFAULTS.outputStyle
+}
+
+function normalizeCitationStrict(input: unknown): WorkMode['citationStrict'] {
+  return typeof input === 'string' && CITATION_LEVELS.includes(input as WorkMode['citationStrict'])
+    ? (input as WorkMode['citationStrict'])
+    : EXECUTION_DEFAULTS.citationStrict
+}
+
+/** 执行控制字段的统一归一化，读取旧配置与保存时共用 */
+function normalizeExecutionControl(input: Record<string, unknown>): Pick<
+  WorkMode,
+  'maxRounds' | 'maxTools' | 'historyMessages' | 'contextChars' | 'outputStyle' | 'citationStrict'
+> {
+  return {
+    maxRounds: normalizeRange(
+      input.maxRounds,
+      MIN_ROUNDS,
+      MAX_ROUNDS,
+      EXECUTION_DEFAULTS.maxRounds
+    ),
+    maxTools: normalizeRange(
+      input.maxTools,
+      MIN_TOOLS_CALL,
+      MAX_TOOLS_CALL,
+      EXECUTION_DEFAULTS.maxTools
+    ),
+    historyMessages: normalizeRange(
+      input.historyMessages,
+      MIN_HISTORY,
+      MAX_HISTORY,
+      EXECUTION_DEFAULTS.historyMessages
+    ),
+    contextChars: normalizeRange(
+      input.contextChars,
+      MIN_CONTEXT,
+      MAX_CONTEXT,
+      EXECUTION_DEFAULTS.contextChars
+    ),
+    outputStyle: normalizeOutputStyle(input.outputStyle),
+    citationStrict: normalizeCitationStrict(input.citationStrict)
+  }
+}
+
 /** 读取自定义模式；文件缺失、损坏或条目非法时丢弃坏条目，不向上抛错 */
 async function readCustomModes(): Promise<WorkMode[]> {
   try {
@@ -164,6 +263,8 @@ async function readCustomModes(): Promise<WorkMode[]> {
         temperature: normalizeTemperature(raw.temperature),
         ragProvider: normalizeProvider(raw.ragProvider),
         topK: normalizeTopK(raw.topK),
+        // 旧配置没有这些字段时按默认补齐，越界值收敛到合法范围
+        ...normalizeExecutionControl(raw),
         createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
         updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now()
       })
@@ -231,6 +332,7 @@ export async function saveMode(input: unknown): Promise<WorkMode> {
   const temperature = normalizeTemperature(raw.temperature)
   const ragProvider = normalizeProvider(raw.ragProvider)
   const topK = normalizeTopK(raw.topK)
+  const execution = normalizeExecutionControl(raw)
 
   return withModeLock(async () => {
     const custom = await readCustomModes()
@@ -246,6 +348,7 @@ export async function saveMode(input: unknown): Promise<WorkMode> {
       temperature,
       ragProvider,
       topK,
+      ...execution,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
     }

@@ -9,8 +9,10 @@ import { CAPABILITIES, capabilitySchemas } from './capabilities'
 import { getPreferences } from './config'
 import { loadIndex } from './kb/store'
 import { getMode } from './modes/store'
+import type { WorkMode } from './modes/types'
 import { executeTool } from './tools'
 
+// 兜底默认：模式缺少执行控制字段时使用
 const MAX_ROUNDS = 10
 const MAX_TOOLS = 14
 const CHUNK_SIZE = 24
@@ -18,18 +20,38 @@ const CHUNK_INTERVAL_MS = 12
 const TOOL_OUTPUT_LIMIT = 300
 const TOOL_RESULT_LIMIT = 8000
 
-const AGENT_SYSTEM = [
-  '你是一名严谨的中文研究助手，可以调用工具完成任务。工作原则：',
-  '1. 涉及用户本地资料、课程文档、已导入文件的问题，先调用 kb_search 检索；引用本地内容时写成（来源：文件名 · 第N段）。本地库无结果时再用 web_search。',
-  '2. 需要最新信息、时事、具体数据或不确定的事实时，使用 web_search 检索；只挑最有价值的 2 到 3 条链接用 fetch_url 阅读原文。',
-  '3. 结论中标注来源 URL；引用本地资料时标注（来源：文件名 · 第N段）；不许编造来源、链接、数据或引用。',
-  '4. 需要查看目录时使用 list_files，需要读取具体文件时使用 read_file。',
-  '5. 需要计算、整理数据或检查本机环境时，可以使用 run_command。',
-  '6. 需要输出报告或保存结果时，使用 write_file。',
-  '7. 信息不足或工具失败时明确说明，不要臆测。',
-  '8. 工具调用要节制：整体不超过 6 次调用，同一条链接不要重复抓取；拿到足够信息就立即给出结论。',
-  '9. 回答使用中文，结构清晰；最终回答只呈现结论与来源，不要罗列工具调用过程。'
-].join('\n')
+/** 输出格式约束：按模式追加在基础规则之后 */
+const OUTPUT_STYLE_PROMPTS: Record<WorkMode['outputStyle'], string> = {
+  free: '',
+  bullets: '输出格式要求：结论用要点列表呈现，每条一句话，避免长段落与大段铺陈。',
+  table: '输出格式要求：能表格化的内容优先用表格表达，表格列数不超过 5 列，表格外不再重复叙述。',
+  report: '输出格式要求：按「摘要 / 分节正文 / 参考来源」三段结构组织回答，先给摘要，再分节展开，最后集中列出来源。'
+}
+
+/** 引用严格度约束 */
+const CITATION_PROMPTS: Record<WorkMode['citationStrict'], string> = {
+  required:
+    '引用要求：每个事实性结论都必须标注来源，本地资料写「来源：文件名 · 第N段」，联网写 URL；找不到来源时要明确说明「暂无可靠来源」，不得省略标注。',
+  preferred:
+    '引用要求：尽量标注来源，本地资料写「来源：文件名 · 第N段」，联网写 URL；没有来源时不要强行编造。',
+  off: '引用要求：不要求逐条标注来源，但不得编造事实、数据、链接或来源。'
+}
+
+/** 基础规则里的工具调用上限随模式变化，避免与可配置的 maxTools 冲突 */
+function buildAgentSystem(maxTools: number): string {
+  return [
+    '你是一名严谨的中文研究助手，可以调用工具完成任务。工作原则：',
+    '1. 涉及用户本地资料、课程文档、已导入文件的问题，先调用 kb_search 检索；引用本地内容时写成（来源：文件名 · 第N段）。本地库无结果时再用 web_search。',
+    '2. 需要最新信息、时事、具体数据或不确定的事实时，使用 web_search 检索；只挑最有价值的 2 到 3 条链接用 fetch_url 阅读原文。',
+    '3. 结论中标注来源 URL；引用本地资料时标注（来源：文件名 · 第N段）；不许编造来源、链接、数据或引用。',
+    '4. 需要查看目录时使用 list_files，需要读取具体文件时使用 read_file。',
+    '5. 需要计算、整理数据或检查本机环境时，可以使用 run_command。',
+    '6. 需要输出报告或保存结果时，使用 write_file。',
+    '7. 信息不足或工具失败时明确说明，不要臆测。',
+    `8. 工具调用要节制：整体不超过 ${maxTools} 次调用，同一条链接不要重复抓取；拿到足够信息就立即给出结论。`,
+    '9. 回答使用中文，结构清晰；最终回答只呈现结论与来源，不要罗列工具调用过程。'
+  ].join('\n')
+}
 
 export type AgentSend = (channel: string, payload: unknown) => void
 
@@ -201,11 +223,23 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
   const mode = await getMode(options.modeId)
   // 调用方显式传温度时优先，否则用模式温度
   const temperature = options.temperature ?? mode.temperature
+  // 执行控制从模式读取，缺失字段回落到兜底常量
+  const maxRounds = Number.isFinite(mode.maxRounds) ? mode.maxRounds : MAX_ROUNDS
+  const maxTools = Number.isFinite(mode.maxTools) ? mode.maxTools : MAX_TOOLS
   const extraPrompt = preferences.extraSystemPrompt.trim()
-  // 基础规则 + 模式职责 + 用户全局提示词
-  const promptParts = [AGENT_SYSTEM, mode.systemPrompt.trim(), extraPrompt].filter(
-    (part) => part.length > 0
-  )
+  // 顺序：基础规则 → 输出格式/引用约束 → 模式提示词 → 全局提示词
+  const behaviorPrompt = [
+    OUTPUT_STYLE_PROMPTS[mode.outputStyle] ?? '',
+    CITATION_PROMPTS[mode.citationStrict] ?? ''
+  ]
+    .filter((part) => part.length > 0)
+    .join('\n')
+  const promptParts = [
+    buildAgentSystem(maxTools),
+    behaviorPrompt,
+    mode.systemPrompt.trim(),
+    extraPrompt
+  ].filter((part) => part.length > 0)
   const systemPrompt = promptParts.join('\n\n')
   // 模式工具为空时 capabilitySchemas 不收窄，这里显式给空数组，即纯对话
   const allowedToolIds = resolveToolIds(mode.tools, preferences.enabledTools)
@@ -234,7 +268,7 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
   const seenEvidence = new Set<string>()
 
   try {
-    for (let round = 0; round < MAX_ROUNDS; round++) {
+    for (let round = 0; round < maxRounds; round++) {
       if (signal.aborted) {
         send('work:chat:done', { requestId })
         return
@@ -279,7 +313,7 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
         const signature = `${name}:${JSON.stringify(args)}`
 
         // 超量或完全重复的调用直接跳过，避免模型陷入循环
-        if (toolCount >= MAX_TOOLS || seenCalls.has(signature)) {
+        if (toolCount >= maxTools || seenCalls.has(signature)) {
           const skipped: ToolEventPayload = {
             requestId,
             id: call.id,

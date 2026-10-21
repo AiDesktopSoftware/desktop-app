@@ -573,14 +573,18 @@ function makeTitle(text: string): string {
 }
 
 function buildHistory(session: WorkSession, assistantId: string): WorkChatMessage[] {
+  // 历史窗口按当前模式的配置生效，切换模式后下一条消息立即使用新值
+  const historyLimit = currentMode.value?.historyMessages ?? 10
+  if (historyLimit <= 0) return []
+  const charLimit = currentMode.value?.contextChars ?? 6000
   const index = session.messages.findIndex((message) => message.id === assistantId)
   const prior = index >= 0 ? session.messages.slice(0, index) : session.messages
   return prior
     .filter((message) => message.content.trim().length > 0)
-    .slice(-10)
+    .slice(-historyLimit)
     .map((message) => ({
       role: message.role,
-      content: message.content.slice(0, 6000)
+      content: message.content.slice(0, charLimit)
     }))
 }
 
@@ -971,7 +975,13 @@ async function saveModeDraft(): Promise<void> {
       description: draft.description.trim(),
       systemPrompt: draft.systemPrompt,
       temperature: clampInput(Number(draft.temperature), 0, 1, 0.4),
-      topK: clampInput(Number(draft.topK), 1, 10, 5)
+      topK: clampInput(Number(draft.topK), 1, 10, 5),
+      maxRounds: Math.round(clampInput(Number(draft.maxRounds), 2, 20, 4)),
+      maxTools: Math.round(clampInput(Number(draft.maxTools), 1, 30, 4)),
+      historyMessages: Math.round(clampInput(Number(draft.historyMessages), 0, 30, 10)),
+      contextChars: Math.round(clampInput(Number(draft.contextChars), 500, 20000, 6000)),
+      outputStyle: draft.outputStyle,
+      citationStrict: draft.citationStrict
     })
     if (!result.ok || !result.mode) {
       modeError.value = result.message || '保存模式失败'
@@ -2334,6 +2344,85 @@ onBeforeUnmount(() => {
                   <option value="both">双路合并</option>
                 </select>
               </label>
+
+              <!-- 执行控制：把原先写死在代码里的 Agent 参数开放给用户调整 -->
+              <div class="prefs-section">
+                <div class="prefs-label">
+                  <span>执行控制</span>
+                  <span class="prefs-count">轮数、工具次数、历史窗口与输出风格</span>
+                </div>
+
+                <div class="prefs-row">
+                  <label class="prefs-field">
+                    <span class="prefs-label">Agent 最大轮数 2-20</span>
+                    <input
+                      v-model.number="modeDraft.maxRounds"
+                      type="number"
+                      min="2"
+                      max="20"
+                      step="1"
+                      :disabled="modeDraft.builtin"
+                    />
+                  </label>
+                  <label class="prefs-field">
+                    <span class="prefs-label">最多工具调用 1-30</span>
+                    <input
+                      v-model.number="modeDraft.maxTools"
+                      type="number"
+                      min="1"
+                      max="30"
+                      step="1"
+                      :disabled="modeDraft.builtin"
+                    />
+                  </label>
+                </div>
+
+                <div class="prefs-row">
+                  <label class="prefs-field">
+                    <span class="prefs-label">历史消息条数 0-30</span>
+                    <input
+                      v-model.number="modeDraft.historyMessages"
+                      type="number"
+                      min="0"
+                      max="30"
+                      step="1"
+                      title="0 表示不带历史，只发送当前问题"
+                      :disabled="modeDraft.builtin"
+                    />
+                  </label>
+                  <label class="prefs-field">
+                    <span class="prefs-label">单条上下文长度 500-20000</span>
+                    <input
+                      v-model.number="modeDraft.contextChars"
+                      type="number"
+                      min="500"
+                      max="20000"
+                      step="500"
+                      :disabled="modeDraft.builtin"
+                    />
+                  </label>
+                </div>
+
+                <div class="prefs-row">
+                  <label class="prefs-field">
+                    <span class="prefs-label">输出格式</span>
+                    <select v-model="modeDraft.outputStyle" :disabled="modeDraft.builtin">
+                      <option value="free">自由文本</option>
+                      <option value="bullets">要点列表</option>
+                      <option value="table">表格优先</option>
+                      <option value="report">结构化报告</option>
+                    </select>
+                  </label>
+                  <label class="prefs-field">
+                    <span class="prefs-label">引用严格度</span>
+                    <select v-model="modeDraft.citationStrict" :disabled="modeDraft.builtin">
+                      <option value="required">必须引用</option>
+                      <option value="preferred">尽量引用</option>
+                      <option value="off">不强制</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
 
               <div v-if="modeError" class="rag-error">{{ modeError }}</div>
               <div v-if="modeNotice" class="kb-notice">{{ modeNotice }}</div>
