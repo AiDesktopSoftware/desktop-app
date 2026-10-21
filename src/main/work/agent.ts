@@ -169,6 +169,46 @@ export function resolveApproval(requestId: string, approved: boolean): void {
   pending.resolve(approved)
 }
 
+// ---------------- L5-4: [[...]] 引用展开 ----------------
+
+/** 匹配 [[type:id]] 或 [[type:id|label]] 语法 */
+const REF_PATTERN = /\[\[(\w+):([^\]|]+)(?:\|[^\]]+)?\]\]/g
+
+/** 扫描并展开 user message 里的引用 */
+async function expandReferences(content: string): Promise<string> {
+  const matches = Array.from(content.matchAll(REF_PATTERN))
+  if (matches.length === 0) return content
+
+  let result = content
+  for (const match of matches) {
+    const [full, type, id] = match
+    let expansion = `[引用类型 ${type} 暂未展开]`
+
+    try {
+      if (type === 'file') {
+        // 读本地文件（最多 10000 字符，UTF-8）
+        const { promises: fs } = await import('node:fs')
+        const buf = await fs.readFile(id.trim())
+        const text = buf.toString('utf-8').slice(0, 10000)
+        expansion = `\n<引用文件 ${id.trim()}>\n${text}\n</引用>\n`
+      } else if (type === 'mode') {
+        expansion = `[模式切换提示：引用了模式 ${id.trim()}，Agent 会按该模式配置执行]`
+      } else if (type === 'kb') {
+        expansion = `[知识库引用：请用 kb_search 检索 docId=${id.trim()} 的内容]`
+      } else if (type === 'session') {
+        expansion = `[会话历史引用：请结合会话上下文理解 id=${id.trim()} 的消息]`
+      }
+    } catch {
+      expansion = `[引用展开失败：${full}]`
+    }
+
+    result = result.replace(full, expansion)
+  }
+  return result
+}
+
+// ---------------- 证据来源接口 ----------------
+
 /** 证据来源：联网来源带 url，本地资料带 path，至少有一个 */
 interface EvidenceItem {
   title: string
@@ -328,7 +368,8 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
   const toolSchemas =
     allowedToolIds.length > 0 ? await capabilitySchemas(allowedToolIds) : []
 
-  const history: LlmAgentMessage[] = options.messages
+  // L5-4: 对 user message 展开 [[...]] 引用（文件/模式/KB/会话）
+  const historyRaw: LlmAgentMessage[] = options.messages
     .filter((message) => message.content.trim().length > 0)
     .map((message) =>
       message.role === 'system'
@@ -337,6 +378,14 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
           ? { role: 'user', content: message.content }
           : { role: 'assistant', content: message.content }
     )
+  const history: LlmAgentMessage[] = []
+  for (const msg of historyRaw) {
+    if (msg.role === 'user') {
+      history.push({ role: 'user', content: await expandReferences(msg.content) })
+    } else {
+      history.push(msg)
+    }
+  }
   const conversation: LlmAgentMessage[] = [
     { role: 'system', content: systemPrompt },
     ...history
