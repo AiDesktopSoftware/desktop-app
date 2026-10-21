@@ -207,7 +207,35 @@ async function expandReferences(content: string): Promise<string> {
   return result
 }
 
-// ---------------- 证据来源接口 ----------------
+// ---------------- L4-2: Agent to-do 进度追踪 ----------------
+
+/** 宽松解析 <todo> 标签：兼容各种大小写和嵌套 */
+const TODO_PATTERN = /<todo\b[^>]*>([\s\S]*?)<\/todo\s*>/gi
+
+interface ParsedTodo {
+  items: Array<{ text: string; done?: boolean }>
+}
+
+function parseTodos(content: string): ParsedTodo[] {
+  const results: ParsedTodo[] = []
+  for (const match of content.matchAll(TODO_PATTERN)) {
+    const inner = (match[1] ?? '').trim()
+    if (!inner) continue
+    // 宽松拆行，每行一个 todo item；支持 - [x] - [ ] 前缀
+    const items = inner
+      .split(/\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const done = /^\s*-?\s*\[(x|X|✓)\]/.test(line)
+        const text = line.replace(/^\s*-?\s*\[([ xX✓])\]\s*/, '').replace(/^\s*[-*•]\s*/, '')
+        return { text, done }
+      })
+      .filter((item) => item.text.length > 0 && item.text.length < 200)
+    if (items.length > 0) results.push({ items })
+  }
+  return results
+}
 
 /** 证据来源：联网来源带 url，本地资料带 path，至少有一个 */
 interface EvidenceItem {
@@ -414,6 +442,12 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
         signal
       })
       lastContent = result.content.trim()
+
+      // L4-2: 宽松解析 todo 标签并发事件
+      const todos = parseTodos(result.content)
+      if (todos.length > 0) {
+        send('work:agent:todo', { requestId, todos })
+      }
 
       if (result.toolCalls.length === 0) {
         finalContent = result.content
