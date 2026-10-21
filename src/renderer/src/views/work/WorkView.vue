@@ -346,6 +346,186 @@ function runPaletteCommand(cmd: CommandItem): void {
   paletteQuery.value = ''
   cmd.run()
 }
+
+// ---------------- L5-4: @ 上下文自动补全 ----------------
+
+interface AtCandidate {
+  type: 'file' | 'kb' | 'mode' | 'session'
+  label: string
+  hint?: string
+  ref: string // 插入后的引用语法，如 [[kb:docId]]
+  icon: string // emoji 或简短符号
+}
+
+const atOpen = ref(false)
+const atQuery = ref('')
+const atIndex = ref(0)
+const atStartPos = ref(0) // @ 符号在 draft 里的位置
+const atPos = ref({ top: 0, left: 0 }) // 弹出面板的屏幕坐标
+const atMirrorRef = ref<HTMLDivElement | null>(null)
+
+/** 根据当前状态生成候选列表 */
+function buildAtCandidates(query: string): AtCandidate[] {
+  const q = query.toLowerCase()
+  const list: AtCandidate[] = []
+
+  // 1. 当前会话已引用过的文件路径
+  const seenFiles = new Set<string>()
+  for (const m of activeSession.value?.messages ?? []) {
+    for (const t of m.tools ?? []) {
+      if (t.name === 'write_file' && typeof t.args.path === 'string') seenFiles.add(t.args.path)
+      if (t.name === 'read_file' && typeof t.args.path === 'string') seenFiles.add(t.args.path)
+    }
+  }
+  for (const path of seenFiles) {
+    const name = path.split(/[\\/]/).pop() ?? path
+    if (!q || name.toLowerCase().includes(q) || path.toLowerCase().includes(q)) {
+      list.push({ type: 'file', label: name, hint: path, ref: `[[file:${path}]]`, icon: '📄' })
+    }
+  }
+
+  // 2. 已注册的 KB 文档（简化：用 KB 列表 IPC）
+  // 这里暂时用 mock 数据，后续接入 work:kb:list
+  if (!q || 'kb文档'.includes(q) || '知识'.includes(q)) {
+    list.push({ type: 'kb', label: '知识库文档', hint: '导入后可引用具体文档', ref: '[[kb:docId]]', icon: '📚' })
+  }
+
+  // 3. 可用模式
+  for (const mode of modes.value ?? []) {
+    if (!q || mode.name.toLowerCase().includes(q)) {
+      list.push({ type: 'mode', label: mode.name, hint: '切换到此模式', ref: `[[mode:${mode.id}]]`, icon: '🎯' })
+    }
+  }
+
+  // 4. 最近会话历史片段
+  const recentMsg = activeSession.value?.messages.filter((m) => m.role === 'user').slice(-3) ?? []
+  for (const [idx, msg] of recentMsg.entries()) {
+    const snippet = msg.content.slice(0, 30)
+    if (!q || snippet.toLowerCase().includes(q)) {
+      list.push({
+        type: 'session',
+        label: `历史: ${snippet}${msg.content.length > 30 ? '…' : ''}`,
+        ref: `[[session:${msg.id}]]`,
+        icon: '💬'
+      })
+    }
+    void idx
+  }
+
+  return list
+}
+
+const atCandidates = computed<AtCandidate[]>(() => buildAtCandidates(atQuery.value))
+
+/** mirror div 复制 textarea 样式 + 内容，计算光标坐标 */
+function calcCursorPosInMirror(): { top: number; left: number } {
+  const ta = textareaEl.value
+  const mirror = atMirrorRef.value
+  if (!ta || !mirror) return { top: 0, left: 0 }
+  const style = window.getComputedStyle(ta)
+  // 复制样式到 mirror
+  const props = ['boxSizing', 'width', 'height', 'padding', 'border', 'fontFamily', 'fontSize', 'lineHeight', 'fontWeight', 'letterSpacing', 'textTransform', 'tabSize', 'textAlign']
+  for (const p of props) {
+    // @ts-expect-error 动态设置
+    mirror.style[p] = (style as CSSStyleDeclaration)[p as keyof CSSStyleDeclaration]
+  }
+  // mirror 内容 = 光标前的文本 + 一个 span 标记光标
+  const cursorPos = ta.selectionStart ?? draft.value.length
+  const beforeCursor = draft.value.slice(0, cursorPos)
+  const afterCursor = draft.value.slice(cursorPos)
+  mirror.textContent = ''
+  const before = document.createTextNode(beforeCursor)
+  const marker = document.createElement('span')
+  marker.textContent = '\u200b' // 零宽空格
+  const after = document.createTextNode(afterCursor)
+  mirror.appendChild(before)
+  mirror.appendChild(marker)
+  mirror.appendChild(after)
+  mirror.style.visibility = 'hidden'
+  mirror.style.display = 'block'
+  // marker 的屏幕坐标就是光标位置
+  const markerRect = marker.getBoundingClientRect()
+  const taRect = ta.getBoundingClientRect()
+  return { top: markerRect.bottom + 4, left: markerRect.left - taRect.left }
+}
+
+/** 检测 @ 触发 + 更新面板位置 */
+function syncAtPopup(): void {
+  const ta = textareaEl.value
+  if (!ta) { atOpen.value = false; return }
+  const pos = ta.selectionStart ?? 0
+  const text = draft.value.slice(0, pos)
+  // 找光标前最后一个 @
+  const atIdx = text.lastIndexOf('@')
+  if (atIdx === -1) { atOpen.value = false; return }
+  // 检查 @ 前是不是开头或空白（否则是邮箱等情况）
+  const charBefore = atIdx === 0 ? ' ' : text[atIdx - 1]
+  if (charBefore && !/\s|[\[\(（]/.test(charBefore)) { atOpen.value = false; return }
+  // 提取 query（@ 之后到空格/换行/光标）
+  const afterAt = text.slice(atIdx + 1)
+  const spaceIdx = afterAt.search(/\s/)
+  const query = spaceIdx === -1 ? afterAt : afterAt.slice(0, spaceIdx)
+  // 只在有实际 query 或 @ 刚输入时打开
+  if (spaceIdx !== -1 || query.length > 20) { atOpen.value = false; return }
+
+  atStartPos.value = atIdx
+  atQuery.value = query
+  atIndex.value = 0
+  atOpen.value = true
+  // 计算位置
+  const { top, left } = calcCursorPosInMirror()
+  const taRect = ta.getBoundingClientRect()
+  atPos.value = { top: taRect.top + top, left: taRect.left + left }
+}
+
+function onComposerInput(): void {
+  syncAtPopup()
+}
+
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (!atOpen.value) return
+  const total = atCandidates.value.length
+  if (total === 0) return
+
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    atOpen.value = false
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    atIndex.value = (atIndex.value + 1) % total
+    return
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    atIndex.value = (atIndex.value - 1 + total) % total
+    return
+  }
+  if (event.key === 'Enter' || event.key === 'Tab') {
+    event.preventDefault()
+    const candidate = atCandidates.value[atIndex.value]
+    if (candidate) insertAtCandidate(candidate)
+    return
+  }
+}
+
+function insertAtCandidate(candidate: AtCandidate): void {
+  const ta = textareaEl.value
+  if (!ta) return
+  const cursorPos = ta.selectionStart ?? 0
+  const before = draft.value.slice(0, atStartPos.value)
+  const after = draft.value.slice(cursorPos)
+  draft.value = before + candidate.ref + ' ' + after
+  atOpen.value = false
+  atQuery.value = ''
+  // 光标移到插入内容之后
+  void nextTick(() => {
+    const newPos = (atStartPos.value + candidate.ref.length + 1)
+    ta.setSelectionRange(newPos, newPos)
+    ta.focus()
+  })
+}
 const capSelected = ref<WorkCapability | null>(null)
 const capArgs = ref<Record<string, string>>({})
 const capRunning = ref(false)
@@ -2740,9 +2920,15 @@ onBeforeUnmount(() => {
             ref="textareaEl"
             v-model="draft"
             rows="2"
-            placeholder="描述研究问题，Enter 发送，Shift + Enter 换行"
+            placeholder="描述研究问题，Enter 发送，Shift + Enter 换行；输入 @ 可引用文件/知识库/模式"
             @keydown.enter.exact="onEnterKey"
+            @input="onComposerInput"
+            @keydown="onComposerKeydown"
+            @click="syncAtPopup"
+            @focus="syncAtPopup"
           />
+          <!-- mirror div：隐藏，复制 textarea 样式计算光标位置用 -->
+          <div ref="atMirrorRef" class="composer-mirror" aria-hidden="true" />
           <div class="composer-foot">
             <span class="hint">
               {{ busy ? '正在执行，可随时停止' : 'Agent 自动调用工具，请核对关键来源' }}
@@ -3594,6 +3780,29 @@ onBeforeUnmount(() => {
               <span class="palette-hint">{{ cmd.hint }}</span>
             </div>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- @ 自动补全面板（Teleport to body）+ mirror div（跟 textarea 同级） -->
+    <Teleport to="body">
+      <div
+        v-if="atOpen && atCandidates.length > 0"
+        class="at-popup"
+        :style="{ top: atPos.top + 'px', left: atPos.left + 'px', position: 'fixed', zIndex: 120 }"
+        @click.stop
+      >
+        <div
+          v-for="(c, idx) in atCandidates"
+          :key="c.ref + idx"
+          class="at-item"
+          :class="{ 'is-active': idx === atIndex }"
+          @mouseenter="atIndex = idx"
+          @mousedown.prevent="insertAtCandidate(c)"
+        >
+          <span class="at-icon">{{ c.icon }}</span>
+          <span class="at-label">{{ c.label }}</span>
+          <span v-if="c.hint" class="at-hint">{{ c.hint }}</span>
         </div>
       </div>
     </Teleport>
@@ -4763,6 +4972,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-box {
+  position: relative; /* mirror div 绝对定位需要 */
   padding: 10px 12px;
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -4830,6 +5040,70 @@ onBeforeUnmount(() => {
 
 .composer-box textarea::placeholder {
   color: var(--text-3);
+}
+
+/* @ 自动补全 — mirror div（隐藏用，跟 textarea 同级） */
+.composer-mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  /* 必须让它跟 textarea 完全重合，calcCursorPosInMirror 里会用 getBoundingClientRect */
+  z-index: -1;
+}
+
+/* @ 自动补全 — 候选面板 */
+.at-popup {
+  min-width: 280px;
+  max-width: 360px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  animation: palette-pop 0.13s ease-out;
+}
+.at-item {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.08s ease;
+}
+.at-item:hover,
+.at-item.is-active {
+  background: rgba(255, 255, 255, 0.08);
+}
+.at-icon {
+  font-size: 14px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+.at-label {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.at-hint {
+  font-size: 10px;
+  color: var(--text-3);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-foot {
