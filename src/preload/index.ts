@@ -117,7 +117,18 @@ const workApi: WorkApi = {
     ipcRenderer.invoke('work:cap:custom:remove', { id }) as Promise<WorkCustomCapRemoveResult>,
   // 文件导出（主进程弹保存对话框 + 写文件）
   workExport: (content: string, defaultName?: string) =>
-    ipcRenderer.invoke('work:export', { content, defaultName }) as Promise<{ ok: boolean; path?: string; message?: string }>
+    ipcRenderer.invoke('work:export', { content, defaultName }) as Promise<{ ok: boolean; path?: string; message?: string }>,
+  // 托盘菜单命令（主进程通过 mainWindow.webContents.send 推送）
+  onTrayCommand: (cb: (cmd: 'new-session' | 'open-prefs') => void) => {
+    const onNew = () => cb('new-session')
+    const onPrefs = () => cb('open-prefs')
+    ipcRenderer.on('app:new-session', onNew)
+    ipcRenderer.on('app:open-prefs', onPrefs)
+    return () => {
+      ipcRenderer.removeListener('app:new-session', onNew)
+      ipcRenderer.removeListener('app:open-prefs', onPrefs)
+    }
+  }
 }
 
 if (process.contextIsolated) {

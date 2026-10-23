@@ -598,6 +598,7 @@ let offEvidence: (() => void) | undefined
 let offFlowStep: (() => void) | undefined
 let offFlowDone: (() => void) | undefined
 let offToolApprove: (() => void) | undefined
+let offTrayCommand: (() => void) | undefined
 
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeSessionId.value) ?? null
@@ -2526,6 +2527,13 @@ onMounted(async () => {
     void refreshFlowRuns()
   })
   offToolApprove = api.onToolApprove((req) => handleToolApprove(req))
+  offTrayCommand = api.onTrayCommand((cmd) => {
+    if (cmd === 'new-session') {
+      void newSession()
+    } else if (cmd === 'open-prefs') {
+      openPrefs()
+    }
+  })
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('click', onWindowClick)
 
@@ -2585,6 +2593,7 @@ onBeforeUnmount(() => {
   offFlowStep?.()
   offFlowDone?.()
   offToolApprove?.()
+  offTrayCommand?.()
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('click', onWindowClick)
   activeResizeCleanup?.()
