@@ -1,9 +1,13 @@
-﻿import { app, BrowserWindow, shell, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, shell, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { registerWorkIpc } from './work/ipc'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
+
+// 统一应用图标（任务栏 + 托盘共用同一张，保持一致）
+const APP_ICON_PATH = join(__dirname, 'assets', 'icon.png')
+const appIcon = nativeImage.createFromPath(APP_ICON_PATH)
 
 // Electron App 自定义属性（标记是否正在退出，防止 close 事件触发 hide 而不是 quit）
 const appState = app as unknown as { isQuiting?: boolean }
@@ -18,6 +22,7 @@ function createWindow(): void {
     backgroundColor: '#0b0d11',
     autoHideMenuBar: true,
     title: 'AI 多源信息采集与研究助手',
+    icon: appIcon,
     // 隐藏原生标题栏，窗口按钮以深色浮层形式叠加在自绘标题栏上
     // hover 效果对齐 Trae：最小化/最大化浅灰背景，关闭按钮红色填充
     titleBarStyle: 'hidden',
@@ -66,11 +71,8 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  // 加载托盘图标
-  const iconPath = join(__dirname, 'assets', 'tray.png')
-  const icon = nativeImage.createFromPath(iconPath)
-
-  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+  // 托盘图标与任务栏图标统一（共用 appIcon）
+  tray = new Tray(appIcon.isEmpty() ? nativeImage.createEmpty() : appIcon)
   tray.setToolTip('AI 研究助手')
 
   const menu = Menu.buildFromTemplate([
