@@ -30,6 +30,11 @@ const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === '1')
 const isMaximized = ref(false)
 let maximizeUnsub: (() => void) | null = null
 
+// 窗口控制按钮包装函数（script 里定义避免 Vue template scope 问题）
+function doMinimize() { window.api.minimizeWindow() }
+function doToggleMaximize() { window.api.toggleMaximize() }
+function doClose() { window.api.closeWindow() }
+
 function toggleSidebar() {
   collapsed.value = !collapsed.value
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? '1' : '0')
@@ -72,14 +77,14 @@ onBeforeUnmount(() => {
         <button
           class="wc-btn wc-min"
           title="最小化"
-          @click="window.api.minimizeWindow()"
+          @click="doMinimize"
         >
           <svg viewBox="0 0 10 1" aria-hidden="true"><rect width="10" height="1" /></svg>
         </button>
         <button
           class="wc-btn wc-max"
           :title="isMaximized ? '还原' : '最大化'"
-          @click="window.api.toggleMaximize()"
+          @click="doToggleMaximize"
         >
           <!-- 未最大化：空心方角矩形 -->
           <template v-if="!isMaximized">
@@ -98,7 +103,7 @@ onBeforeUnmount(() => {
         <button
           class="wc-btn wc-close"
           title="关闭"
-          @click="window.api.closeWindow()"
+          @click="doClose"
         >
           <svg viewBox="0 0 10 10" aria-hidden="true">
             <line x1="1" y1="1" x2="9" y2="9" />

@@ -33,6 +33,8 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
+    // 开发模式自动打开 DevTools，方便调试 IPC / preload 注入
+    if (process.env['ELECTRON_RENDERER_URL']) mainWindow?.webContents.openDevTools()
   })
 
   // 最大化/还原状态变化 → 推送给渲染层切换按钮图标
