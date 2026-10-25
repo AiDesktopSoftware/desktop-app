@@ -4,20 +4,6 @@ import ChatView from './views/chat/ChatView.vue'
 import WorkView from './views/work/WorkView.vue'
 import InfoView from './views/info/InfoView.vue'
 
-// 窗口控制 API（preload 注入）
-declare global {
-  interface Window {
-    api: {
-      platform: string
-      versions: { electron: string; chrome: string }
-      minimizeWindow: () => void
-      toggleMaximize: () => void
-      closeWindow: () => void
-      onMaximizeState: (cb: (isMaximized: boolean) => void) => () => void
-    }
-  }
-}
-
 type ModeKey = 'chat' | 'work' | 'info'
 
 // 三个模式各自一个目录，对应三个人各自负责的模块，互不干扰

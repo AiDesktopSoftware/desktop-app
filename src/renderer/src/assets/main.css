@@ -139,6 +139,7 @@ button {
   padding: 0;
   color: var(--text-2);
   cursor: pointer;
+  -webkit-app-region: no-drag;
   transition: background 0.12s ease, color 0.12s ease;
 }
 
