@@ -37,6 +37,15 @@ const api = {
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome
+  },
+  // 窗口控制（自绘标题栏按钮用）
+  minimizeWindow: () => ipcRenderer.send('window:minimize'),
+  toggleMaximize: () => ipcRenderer.send('window:maximize'),
+  closeWindow: () => ipcRenderer.send('window:close'),
+  onMaximizeState: (cb: (isMaximized: boolean) => void) => {
+    const handler = (_evt: Electron.IpcRendererEvent, payload: boolean) => cb(payload)
+    ipcRenderer.on('window:maximize:state', handler)
+    return () => ipcRenderer.removeListener('window:maximize:state', handler)
   }
 }
 

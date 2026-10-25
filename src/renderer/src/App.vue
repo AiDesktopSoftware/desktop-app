@@ -4,6 +4,20 @@ import ChatView from './views/chat/ChatView.vue'
 import WorkView from './views/work/WorkView.vue'
 import InfoView from './views/info/InfoView.vue'
 
+// 窗口控制 API（preload 注入）
+declare global {
+  interface Window {
+    api: {
+      platform: string
+      versions: { electron: string; chrome: string }
+      minimizeWindow: () => void
+      toggleMaximize: () => void
+      closeWindow: () => void
+      onMaximizeState: (cb: (isMaximized: boolean) => void) => () => void
+    }
+  }
+}
+
 type ModeKey = 'chat' | 'work' | 'info'
 
 // 三个模式各自一个目录，对应三个人各自负责的模块，互不干扰
@@ -26,6 +40,10 @@ const activeView = computed(() => VIEWS[activeMode.value])
 const activeModeLabel = computed(() => MODES.find((m) => m.key === activeMode.value)?.label ?? '')
 const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === '1')
 
+// 自绘窗口按钮：最大化状态（用于切换最大化/还原图标）
+const isMaximized = ref(false)
+let maximizeUnsub: (() => void) | null = null
+
 function toggleSidebar() {
   collapsed.value = !collapsed.value
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? '1' : '0')
@@ -44,19 +62,64 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  maximizeUnsub = window.api.onMaximizeState((s) => (isMaximized.value = s))
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  if (maximizeUnsub) maximizeUnsub()
+})
 </script>
 
 <template>
   <div class="app" :class="['mode-' + activeMode, { 'is-collapsed': collapsed }]">
-    <!-- 自绘标题栏：与窗口按钮浮层同高，可拖动窗口 -->
+    <!-- 自绘标题栏：左侧可拖动窗口，右侧自绘三个窗口控制按钮 -->
     <header class="titlebar">
       <span class="titlebar-mark" aria-hidden="true">
         <i v-for="n in 9" :key="n" />
       </span>
       <span class="titlebar-name">AI 多源信息采集与研究助手</span>
       <span class="titlebar-mode">{{ activeModeLabel }}</span>
+      <div class="window-controls">
+        <button
+          class="wc-btn wc-min"
+          title="最小化"
+          @click="window.api.minimizeWindow()"
+        >
+          <svg viewBox="0 0 10 1" aria-hidden="true"><rect width="10" height="1" /></svg>
+        </button>
+        <button
+          class="wc-btn wc-max"
+          :title="isMaximized ? '还原' : '最大化'"
+          @click="window.api.toggleMaximize()"
+        >
+          <!-- 未最大化：空心方角矩形 -->
+          <template v-if="!isMaximized">
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <rect x="0.5" y="0.5" width="9" height="9" rx="1" fill="none" />
+            </svg>
+          </template>
+          <!-- 已最大化：带内缩的重叠矩形，表示还原 -->
+          <template v-else>
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <rect x="2" y="0.5" width="7.5" height="7.5" rx="1" fill="none" />
+              <rect x="0.5" y="2" width="7.5" height="7.5" rx="1" fill="none" />
+            </svg>
+          </template>
+        </button>
+        <button
+          class="wc-btn wc-close"
+          title="关闭"
+          @click="window.api.closeWindow()"
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <line x1="1" y1="1" x2="9" y2="9" />
+            <line x1="9" y1="1" x2="1" y2="9" />
+          </svg>
+        </button>
+      </div>
     </header>
 
     <div class="app-body">

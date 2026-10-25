@@ -108,17 +108,64 @@ button {
   height: 100%;
 }
 
-/* 自绘标题栏：右侧留出原生窗口按钮浮层的位置，整条可拖动窗口 */
+/* 自绘标题栏：左半部分可拖动窗口，右侧三个按钮 no-drag */
 .titlebar {
   flex: 0 0 40px;
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 0 150px 0 16px;
+  padding: 0 8px 0 16px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
   user-select: none;
+}
+
+/* 三个窗口控制按钮容器：flex 靠右，整体排除拖拽区 */
+.window-controls {
+  margin-left: auto;
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.wc-btn {
+  width: 46px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.wc-btn svg {
+  width: 10px;
+  height: 10px;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 最小化 / 最大化 hover：浅灰背景 + 白色符号 */
+.wc-min:hover,
+.wc-max:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+/* 关闭按钮 hover：红色背景 + 白色符号 */
+.wc-close:hover {
+  background: #e81123;
+  color: #ffffff;
+}
+
+.wc-btn:active {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .titlebar-mark {

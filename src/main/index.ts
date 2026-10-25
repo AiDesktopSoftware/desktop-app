@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, shell, Tray, Menu, nativeImage, ipcMain } from 'electron'
 import { join } from 'path'
 import { registerWorkIpc } from './work/ipc'
 
@@ -23,20 +23,8 @@ function createWindow(): void {
     autoHideMenuBar: true,
     title: 'AI 多源信息采集与研究助手',
     icon: appIcon,
-    // 隐藏原生标题栏，窗口按钮以深色浮层形式叠加在自绘标题栏上
-    // hover 效果对齐 Trae：最小化/最大化浅灰背景，关闭按钮红色填充
+    // 隐藏原生标题栏，窗口按钮由渲染层自绘（App.vue 的 titlebar 右侧）
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#10131a',
-      symbolColor: '#98a1b0',
-      hoverColor: 'rgba(255, 255, 255, 0.08)',
-      hoverSymbolColor: '#ffffff',
-      closeColor: '#10131a',
-      closeSymbolColor: '#98a1b0',
-      closeHoverColor: '#e81123',
-      closeHoverSymbolColor: '#ffffff',
-      height: 40
-    } as Electron.TitleBarOverlay,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -46,6 +34,12 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
+
+  // 最大化/还原状态变化 → 推送给渲染层切换按钮图标
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximize:state', true))
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window:maximize:state', false))
+  mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window:maximize:state', true))
+  mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window:maximize:state', false))
 
   // 关闭按钮 → 最小化到托盘（不退出进程）
   mainWindow.on('close', (event) => {
@@ -159,3 +153,12 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   appState.isQuiting = true
 })
+
+// 渲染层自绘窗口按钮 → 主进程实际操作
+ipcMain.on('window:minimize', () => mainWindow?.minimize())
+ipcMain.on('window:maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+})
+ipcMain.on('window:close', () => mainWindow?.close())
