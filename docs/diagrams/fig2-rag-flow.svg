@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 380" width="720" height="380">
+  <defs>
+    <style>
+      .node { fill: #fff; stroke: #94a3b8; stroke-width: 1.5; rx: 10; }
+      .node-in { fill: #fef3c7; stroke: #d97706; stroke-width: 1.5; rx: 10; }
+      .node-core { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; rx: 10; }
+      .node-out { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.5; rx: 10; }
+      .label { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 13px; fill: #1f2937; font-weight: 600; }
+      .label-sm { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 11px; fill: #64748b; }
+      .arrow { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#rag-arrow); }
+      .group-label { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 12px; fill: #94a3b8; font-weight: 700; }
+    </style>
+    <marker id="rag-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <!-- 标题 -->
+  <text x="360" y="28" text-anchor="middle" class="label" style="font-size:16px; fill:#16a34a;">RAG 检索增强生成 — 流程图</text>
+
+  <!-- 数据输入（左） -->
+  <text x="130" y="58" text-anchor="middle" class="group-label">📥 数据输入</text>
+  <rect x="60" y="65" width="140" height="50" class="node-in"/>
+  <text x="130" y="85" text-anchor="middle" class="label">文档导入</text>
+  <text x="130" y="102" text-anchor="middle" class="label-sm">md / txt / pdf / 网页</text>
+
+  <!-- 预处理 -->
+  <text x="130" y="140" text-anchor="middle" class="group-label">⚙️ 预处理</text>
+  <rect x="60" y="148" width="140" height="48" class="node"/>
+  <text x="130" y="168" text-anchor="middle" class="label">500 字切片</text>
+  <text x="130" y="184" text-anchor="middle" class="label-sm">块间 80 字重叠</text>
+
+  <rect x="60" y="210" width="140" height="48" class="node"/>
+  <text x="130" y="230" text-anchor="middle" class="label">标题加权 1.3×</text>
+  <text x="130" y="246" text-anchor="middle" class="label-sm">关键词命中加权</text>
+
+  <rect x="60" y="272" width="140" height="48" class="node-core"/>
+  <text x="130" y="292" text-anchor="middle" class="label">BM25 索引构建</text>
+  <text x="130" y="308" text-anchor="middle" class="label-sm">纯 Node.js，无 Python 依赖</text>
+
+  <!-- 存储 -->
+  <text x="360" y="58" text-anchor="middle" class="group-label">💾 存储</text>
+  <rect x="280" y="65" width="160" height="50" class="node"/>
+  <text x="360" y="85" text-anchor="middle" class="label">本地索引存储</text>
+  <text x="360" y="102" text-anchor="middle" class="label-sm">SQLite 文件，轻量无服务</text>
+
+  <!-- 查询 -->
+  <text x="360" y="140" text-anchor="middle" class="group-label">🔍 查询</text>
+  <rect x="280" y="148" width="160" height="48" class="node-in"/>
+  <text x="360" y="168" text-anchor="middle" class="label">用户查询</text>
+  <text x="360" y="184" text-anchor="middle" class="label-sm">自然语言问题</text>
+
+  <rect x="280" y="210" width="160" height="48" class="node-core"/>
+  <text x="360" y="230" text-anchor="middle" class="label">BM25 相似度检索</text>
+  <text x="360" y="246" text-anchor="middle" class="label-sm">Top-K 相关片段召回</text>
+
+  <!-- 生成 -->
+  <text x="590" y="58" text-anchor="middle" class="group-label">✨ 生成</text>
+  <rect x="500" y="65" width="180" height="50" class="node"/>
+  <text x="590" y="85" text-anchor="middle" class="label">拼 Prompt</text>
+  <text x="590" y="102" text-anchor="middle" class="label-sm">指令 + 检索片段 + 问题</text>
+
+  <rect x="500" y="148" width="180" height="50" class="node-core"/>
+  <text x="590" y="168" text-anchor="middle" class="label">LLM 生成</text>
+  <text x="590" y="185" text-anchor="middle" class="label-sm">云端 API（DeepSeek 等）</text>
+
+  <rect x="500" y="230" width="180" height="50" class="node-out"/>
+  <text x="590" y="250" text-anchor="middle" class="label">带来源标注的回答</text>
+  <text x="590" y="267" text-anchor="middle" class="label-sm">标注文档 + 片段位置</text>
+
+  <!-- 连接线 -->
+  <line x1="130" y1="115" x2="130" y2="148" class="arrow"/>
+  <line x1="130" y1="196" x2="130" y2="210" class="arrow"/>
+  <line x1="130" y1="258" x2="130" y2="272" class="arrow"/>
+  <line x1="200" y1="296" x2="280" y2="196" class="arrow"/>
+  <line x1="200" y1="90" x2="280" y2="90" class="arrow"/>
+  <line x1="360" y1="115" x2="360" y2="148" class="arrow"/>
+  <line x1="360" y1="196" x2="360" y2="210" class="arrow"/>
+  <line x1="440" y1="234" x2="500" y2="90" class="arrow"/>
+  <line x1="590" y1="115" x2="590" y2="148" class="arrow"/>
+  <line x1="590" y1="198" x2="590" y2="230" class="arrow"/>
+
+  <!-- 底部说明 -->
+  <rect x="60" y="340" width="600" height="30" rx="8" fill="#f0fdf4" stroke="#86efac" stroke-width="1"/>
+  <text x="360" y="360" text-anchor="middle" class="label" style="font-size:12px; fill:#15803d;">⭐ 本地优先：索引存在本机 SQLite，LLM 调用时才联网，敏感数据不出设备</text>
+</svg>

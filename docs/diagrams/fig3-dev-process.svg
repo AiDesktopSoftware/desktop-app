@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" width="720" height="300">
+  <defs>
+    <style>
+      .phase { fill: #fff; stroke: #94a3b8; stroke-width: 1.5; rx: 10; }
+      .phase-active { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; rx: 10; }
+      .outcome { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; rx: 6; }
+      .label { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 13px; fill: #1f2937; font-weight: 600; }
+      .label-sm { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 11px; fill: #64748b; }
+      .arrow { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#dev-arrow); }
+      .num { font-family: Arial, sans-serif; font-size: 14px; fill: #16a34a; font-weight: 700; }
+    </style>
+    <marker id="dev-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <!-- 标题 -->
+  <text x="360" y="28" text-anchor="middle" class="label" style="font-size:16px; fill:#16a34a;">研发流程框架图</text>
+
+  <!-- 阶段1：需求分析 -->
+  <circle cx="92" cy="70" r="18" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="92" y="75" text-anchor="middle" class="num">1</text>
+  <rect x="40" y="95" width="105" height="55" class="phase-active"/>
+  <text x="92" y="115" text-anchor="middle" class="label">需求分析</text>
+  <text x="92" y="132" text-anchor="middle" class="label-sm">第 2-3 周</text>
+  <rect x="35" y="160" width="115" height="26" class="outcome"/>
+  <text x="92" y="177" text-anchor="middle" class="label-sm">需求规格说明书</text>
+
+  <!-- 阶段2：概要设计 -->
+  <circle cx="228" cy="70" r="18" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="228" y="75" text-anchor="middle" class="num" style="fill:#64748b;">2</text>
+  <rect x="175" y="95" width="105" height="55" class="phase"/>
+  <text x="228" y="115" text-anchor="middle" class="label">概要设计</text>
+  <text x="228" y="132" text-anchor="middle" class="label-sm">第 4 周</text>
+  <rect x="170" y="160" width="115" height="26" class="outcome"/>
+  <text x="228" y="177" text-anchor="middle" class="label-sm">模块结构图</text>
+
+  <!-- 阶段3：详细设计 -->
+  <circle cx="364" cy="70" r="18" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="364" y="75" text-anchor="middle" class="num" style="fill:#64748b;">3</text>
+  <rect x="311" y="95" width="105" height="55" class="phase"/>
+  <text x="364" y="115" text-anchor="middle" class="label">详细设计</text>
+  <text x="364" y="132" text-anchor="middle" class="label-sm">第 5 周</text>
+  <rect x="306" y="160" width="115" height="26" class="outcome"/>
+  <text x="364" y="177" text-anchor="middle" class="label-sm">类图 / 流程图 / 接口文档</text>
+
+  <!-- 阶段4：编码实现 -->
+  <circle cx="500" cy="70" r="18" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="500" y="75" text-anchor="middle" class="num" style="fill:#64748b;">4</text>
+  <rect x="447" y="95" width="105" height="55" class="phase"/>
+  <text x="500" y="115" text-anchor="middle" class="label">编码实现</text>
+  <text x="500" y="132" text-anchor="middle" class="label-sm">第 6-10 周</text>
+  <rect x="442" y="160" width="115" height="26" class="outcome"/>
+  <text x="500" y="177" text-anchor="middle" class="label-sm">源代码（Git 仓库）</text>
+
+  <!-- 阶段5：综合测试 -->
+  <circle cx="636" cy="70" r="18" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="636" y="75" text-anchor="middle" class="num" style="fill:#64748b;">5</text>
+  <rect x="583" y="95" width="105" height="55" class="phase"/>
+  <text x="636" y="115" text-anchor="middle" class="label">综合测试</text>
+  <text x="636" y="132" text-anchor="middle" class="label-sm">第 11 周</text>
+  <rect x="578" y="160" width="115" height="26" class="outcome"/>
+  <text x="636" y="177" text-anchor="middle" class="label-sm">测试报告</text>
+
+  <!-- 箭头 -->
+  <line x1="145" y1="122" x2="175" y2="122" class="arrow"/>
+  <line x1="280" y1="122" x2="311" y2="122" class="arrow"/>
+  <line x1="416" y1="122" x2="447" y2="122" class="arrow"/>
+  <line x1="552" y1="122" x2="583" y2="122" class="arrow"/>
+
+  <!-- 底部：协作模式 -->
+  <rect x="40" y="210" width="640" height="70" rx="10" fill="#fef9c3" stroke="#ca8a04" stroke-width="1"/>
+  <text x="60" y="232" class="label" style="font-size:12px; fill:#854d0e;">🤝 协作模式：</text>
+  <rect x="140" y="222" width="160" height="18" rx="4" fill="#fefce8" stroke="#eab308" stroke-width="1"/>
+  <text x="220" y="235" text-anchor="middle" class="label-sm" style="fill:#854d0e;">赵：feat/zhao-work 分支 → PR 合入 main</text>
+  <rect x="310" y="222" width="160" height="18" rx="4" fill="#fefce8" stroke="#eab308" stroke-width="1"/>
+  <text x="390" y="235" text-anchor="middle" class="label-sm" style="fill:#854d0e;">胡：feat/hu-info 分支，JSONL 契约协作</text>
+  <rect x="480" y="222" width="180" height="18" rx="4" fill="#fefce8" stroke="#eab308" stroke-width="1"/>
+  <text x="570" y="235" text-anchor="middle" class="label-sm" style="fill:#854d0e;">公共外壳 → main 分支，影响两人</text>
+
+  <text x="60" y="260" class="label-sm" style="fill:#854d0e;">🔁 迭代：每个阶段可回溯前序阶段修正，持续集成到 main 分支</text>
+</svg>
