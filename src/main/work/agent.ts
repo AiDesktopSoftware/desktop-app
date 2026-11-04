@@ -510,9 +510,9 @@ export async function runAgent(options: AgentRunOptions): Promise<void> {
         }
         send('work:agent:tool', running)
 
-        // L1-1: 工具审批（ask 模式下危险操作需要用户确认）
+        // L1-1: 工具审批（askToolApproval 内部按 policy 分支：auto→放行 / deny→拒绝 / ask→等用户）
         let outcome: { ok: boolean; content: string }
-        if (parsed.ok && preferences.approvalPolicy === 'ask' && DANGEROUS_TOOLS.has(name)) {
+        if (parsed.ok && DANGEROUS_TOOLS.has(name)) {
           const approved = await askToolApproval(
             `${requestId}:${call.id}`,
             name,
