@@ -276,6 +276,7 @@ export interface WorkApi {
   onError(cb: (payload: { requestId: string; message: string }) => void): () => void
   onTool(cb: (payload: WorkToolEvent) => void): () => void
   onEvidence(cb: (payload: WorkEvidenceEvent) => void): () => void
+  onTodo(cb: (payload: { requestId: string; todos: Array<{ items: Array<{ text: string; done?: boolean }> }> }) => void): () => void
   settingsStatus(): Promise<WorkSettingsStatus>
   loadSessions(): Promise<WorkSession[]>
   saveSessions(sessions: WorkSession[]): Promise<void>
