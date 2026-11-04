@@ -17,6 +17,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@vitejs/plugin-vue": "^6.0.10",
+    "docx": "^9.15.2",
     "electron": "^44.9.1",
     "electron-vite": "^6.0.0",
     "typescript": "^5.9.3",
