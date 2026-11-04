@@ -1,15 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 480" width="720" height="480">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 560" width="800" height="560">
   <defs>
     <style>
-      .layer { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 2; rx: 12; }
-      .box { fill: #fff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
-      .box-accent { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.5; rx: 8; }
-      .label { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 14px; fill: #1f2937; font-weight: 600; }
-      .label-sm { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 12px; fill: #475569; }
-      .layer-title { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 13px; fill: #16a34a; font-weight: 700; }
-      .arrow { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .layer { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 2; rx: 14; }
+      .box { fill: #fff; stroke: #94a3b8; stroke-width: 1.5; rx: 10; }
+      .box-accent { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.5; rx: 10; }
+      .label { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 15px; fill: #1f2937; font-weight: 600; }
+      .label-sm { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 13px; fill: #475569; }
+      .layer-title { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 14px; fill: #16a34a; font-weight: 700; }
+      .arrow { stroke: #64748b; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
       .ipc { stroke: #2563eb; stroke-width: 2; stroke-dasharray: 6 4; fill: none; }
+      .diy-tag { fill: #fef9c3; stroke: #ca8a04; stroke-width: 1.5; rx: 12; }
     </style>
     <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
@@ -17,80 +18,88 @@
   </defs>
 
   <!-- 标题 -->
-  <text x="360" y="28" text-anchor="middle" class="label" style="font-size:16px; fill:#16a34a;">智研台 Desk — 技术路线分层架构图</text>
+  <text x="400" y="32" text-anchor="middle" class="label" style="font-size:18px; fill:#16a34a;">智研台 Desk — 技术路线分层架构图</text>
 
-  <!-- 第一层：渲染层 -->
-  <rect x="40" y="50" width="640" height="100" class="layer"/>
-  <text x="55" y="72" class="layer-title">渲染层（Vue 3 + TypeScript）</text>
+  <!-- ===== 第一层：渲染层 ===== -->
+  <rect x="40" y="55" width="720" height="120" class="layer"/>
+  <text x="60" y="82" class="layer-title">渲染层（Vue 3 + TypeScript）</text>
 
-  <rect x="80" y="85" width="180" height="50" class="box-accent"/>
-  <text x="170" y="108" text-anchor="middle" class="label">工作模式</text>
-  <text x="170" y="124" text-anchor="middle" class="label-sm">RAG + Agent + 工作流</text>
+  <!-- 工作模式 -->
+  <rect x="75" y="95" width="215" height="62" class="box-accent"/>
+  <text x="182" y="120" text-anchor="middle" class="label">工作模式</text>
+  <text x="182" y="140" text-anchor="middle" class="label-sm">RAG 知识库 + Agent + 工作流</text>
 
-  <rect x="260" y="85" width="180" height="50" class="box"/>
-  <text x="350" y="108" text-anchor="middle" class="label">信息模式</text>
-  <text x="350" y="124" text-anchor="middle" class="label-sm">多源采集 + 清洗</text>
+  <!-- 信息模式 -->
+  <rect x="308" y="95" width="215" height="62" class="box"/>
+  <text x="415" y="120" text-anchor="middle" class="label">信息模式</text>
+  <text x="415" y="140" text-anchor="middle" class="label-sm">多源采集 + 清洗</text>
 
-  <rect x="440" y="85" width="200" height="50" class="box"/>
-  <text x="540" y="108" text-anchor="middle" class="label">公共外壳</text>
-  <text x="540" y="124" text-anchor="middle" class="label-sm">侧栏 / 主题 / 托盘</text>
+  <!-- 公共外壳 -->
+  <rect x="541" y="95" width="195" height="62" class="box"/>
+  <text x="638" y="120" text-anchor="middle" class="label">公共外壳</text>
+  <text x="638" y="140" text-anchor="middle" class="label-sm">侧栏 / 主题 / 托盘</text>
 
-  <!-- IPC 标注 -->
-  <line x1="360" y1="150" x2="360" y2="170" class="ipc"/>
-  <text x="360" y="165" text-anchor="middle" class="label-sm" style="fill:#2563eb;">IPC 进程间通信</text>
+  <!-- IPC 虚线 -->
+  <line x1="400" y1="175" x2="400" y2="200" class="ipc"/>
+  <rect x="320" y="178" width="160" height="22" rx="11" fill="#dbeafe" stroke="#2563eb" stroke-width="1"/>
+  <text x="400" y="194" text-anchor="middle" class="label-sm" style="fill:#1d4ed8; font-weight:600;">⬇ IPC 进程间通信</text>
 
-  <!-- 第二层：主进程核心引擎 -->
-  <rect x="40" y="175" width="640" height="140" class="layer"/>
-  <text x="55" y="197" class="layer-title">主进程核心引擎（Node.js）</text>
+  <!-- ===== 第二层：主进程核心引擎 ===== -->
+  <rect x="40" y="205" width="720" height="165" class="layer"/>
+  <text x="60" y="232" class="layer-title">主进程核心引擎（Node.js）</text>
 
-  <rect x="60" y="210" width="120" height="45" class="box-accent"/>
-  <text x="120" y="230" text-anchor="middle" class="label">Agent</text>
-  <text x="120" y="245" text-anchor="middle" class="label-sm">Function Calling</text>
+  <!-- 5 个核心引擎模块，每个加宽 -->
+  <rect x="55" y="248" width="130" height="55" class="box-accent"/>
+  <text x="120" y="271" text-anchor="middle" class="label">Agent</text>
+  <text x="120" y="288" text-anchor="middle" class="label-sm">Function Calling</text>
 
-  <rect x="195" y="210" width="120" height="45" class="box-accent"/>
-  <text x="255" y="230" text-anchor="middle" class="label">RAG 检索</text>
-  <text x="255" y="245" text-anchor="middle" class="label-sm">BM25 + 语义</text>
+  <rect x="200" y="248" width="130" height="55" class="box-accent"/>
+  <text x="265" y="271" text-anchor="middle" class="label">RAG 检索</text>
+  <text x="265" y="288" text-anchor="middle" class="label-sm">BM25 相似度</text>
 
-  <rect x="330" y="210" width="120" height="45" class="box-accent"/>
-  <text x="390" y="230" text-anchor="middle" class="label">知识库</text>
-  <text x="390" y="245" text-anchor="middle" class="label-sm">导入 / 切片 / 索引</text>
+  <rect x="345" y="248" width="130" height="55" class="box-accent"/>
+  <text x="410" y="271" text-anchor="middle" class="label">知识库</text>
+  <text x="410" y="288" text-anchor="middle" class="label-sm">导入 / 切片 / 索引</text>
 
-  <rect x="465" y="210" width="120" height="45" class="box-accent"/>
-  <text x="525" y="230" text-anchor="middle" class="label">工作流引擎</text>
-  <text x="525" y="245" text-anchor="middle" class="label-sm">DAG 节点执行</text>
+  <rect x="490" y="248" width="130" height="55" class="box-accent"/>
+  <text x="555" y="271" text-anchor="middle" class="label">工作流引擎</text>
+  <text x="555" y="288" text-anchor="middle" class="label-sm">DAG 节点执行</text>
 
-  <rect x="600" y="210" width="70" height="45" class="box"/>
-  <text x="635" y="230" text-anchor="middle" class="label">能力中心</text>
-  <text x="635" y="245" text-anchor="middle" class="label-sm">7 工具 + DIY</text>
+  <rect x="635" y="248" width="110" height="55" class="box"/>
+  <text x="690" y="271" text-anchor="middle" class="label">能力中心</text>
+  <text x="690" y="288" text-anchor="middle" class="label-sm">7 工具 + DIY</text>
 
-  <!-- DIY 高亮条 -->
-  <rect x="60" y="268" width="610" height="38" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1"/>
-  <text x="365" y="292" text-anchor="middle" class="label" style="font-size:13px; fill:#854d0e;">⭐ DIY 亮点：三层可配置 → L1 参数化模式 / L2 工作流编排 / L3 自定义 HTTP 能力</text>
+  <!-- DIY 亮点条（更宽更突出） -->
+  <rect x="55" y="318" width="690" height="40" rx="20" class="diy-tag"/>
+  <text x="400" y="343" text-anchor="middle" class="label" style="font-size:14px; fill:#854d0e; font-weight:700;">⭐ DIY 三层亮点 → ① L1 参数化模式  ② L2 工作流编排  ③ L3 自定义 HTTP 能力</text>
 
   <!-- 向下箭头 -->
-  <line x1="360" y1="315" x2="360" y2="345" class="arrow"/>
+  <line x1="400" y1="370" x2="400" y2="398" class="arrow"/>
 
-  <!-- 第三层：数据服务层 -->
-  <rect x="40" y="350" width="640" height="100" class="layer"/>
-  <text x="55" y="372" class="layer-title">数据与服务层</text>
+  <!-- ===== 第三层：数据服务层 ===== -->
+  <rect x="40" y="405" width="720" height="110" class="layer"/>
+  <text x="60" y="432" class="layer-title">数据与服务层</text>
 
-  <rect x="80" y="385" width="140" height="48" class="box"/>
-  <text x="150" y="405" text-anchor="middle" class="label">云端 LLM API</text>
-  <text x="150" y="422" text-anchor="middle" class="label-sm">DeepSeek / OpenAI 兼容</text>
+  <rect x="75" y="448" width="165" height="50" class="box"/>
+  <text x="157" y="470" text-anchor="middle" class="label">云端 LLM API</text>
+  <text x="157" y="486" text-anchor="middle" class="label-sm">DeepSeek / OpenAI 兼容</text>
 
-  <rect x="240" y="385" width="140" height="48" class="box"/>
-  <text x="310" y="405" text-anchor="middle" class="label">本地向量索引</text>
-  <text x="310" y="422" text-anchor="middle" class="label-sm">BM25 + SQLite</text>
+  <rect x="258" y="448" width="165" height="50" class="box"/>
+  <text x="340" y="470" text-anchor="middle" class="label">本地向量索引</text>
+  <text x="340" y="486" text-anchor="middle" class="label-sm">BM25 + SQLite</text>
 
-  <rect x="400" y="385" width="140" height="48" class="box"/>
-  <text x="470" y="405" text-anchor="middle" class="label">本地文件系统</text>
-  <text x="470" y="422" text-anchor="middle" class="label-sm">userData 隔离存储</text>
+  <rect x="441" y="448" width="165" height="50" class="box"/>
+  <text x="523" y="470" text-anchor="middle" class="label">本地文件系统</text>
+  <text x="523" y="486" text-anchor="middle" class="label-sm">userData 隔离存储</text>
 
-  <rect x="560" y="385" width="100" height="48" class="box"/>
-  <text x="610" y="405" text-anchor="middle" class="label">HTTP 工具</text>
-  <text x="610" y="422" text-anchor="middle" class="label-sm">搜索 / 抓网页</text>
+  <rect x="624" y="448" width="110" height="50" class="box"/>
+  <text x="679" y="470" text-anchor="middle" class="label">HTTP 工具</text>
+  <text x="679" y="486" text-anchor="middle" class="label-sm">搜索 / 抓网页</text>
 
-  <!-- 右侧图例 -->
-  <rect x="645" y="50" width="60" height="14" fill="#dcfce7" stroke="#16a34a" stroke-width="1" rx="3"/>
-  <text x="645" y="75" class="label-sm">核心引擎模块</text>
+  <!-- 底部图例 -->
+  <rect x="40" y="528" width="720" height="24" rx="6" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="1"/>
+  <rect x="55" y="533" width="14" height="14" fill="#dcfce7" stroke="#16a34a" stroke-width="1" rx="3"/>
+  <text x="77" y="545" class="label-sm" style="fill:#475569;">主进程核心引擎模块（赵负责）</text>
+  <rect x="260" y="533" width="14" height="14" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5" rx="3"/>
+  <text x="282" y="545" class="label-sm" style="fill:#475569;">DIY 三层可配置（本项目亮点）</text>
 </svg>
