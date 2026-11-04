@@ -1,27 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import ChatView from './views/chat/ChatView.vue'
 import WorkView from './views/work/WorkView.vue'
 import InfoView from './views/info/InfoView.vue'
 
-type ModeKey = 'chat' | 'work' | 'info'
+type ModeKey = 'work' | 'info'
 
-// 三个模式各自一个目录，对应三个人各自负责的模块，互不干扰
+// 两个模式各自一个目录，对应两个人各自负责的模块，互不干扰
 const VIEWS = {
-  chat: ChatView,
   work: WorkView,
   info: InfoView
 } as const
 
 const MODES: { key: ModeKey; label: string; desc: string; owner: string }[] = [
-  { key: 'chat', label: '对话', desc: '模型推理与多轮问答', owner: '龙' },
   { key: 'work', label: '工作', desc: '知识库 · 检索 · Agent', owner: '赵' },
   { key: 'info', label: '信息', desc: '多源采集与数据清洗', owner: '胡' }
 ]
 
 const COLLAPSE_KEY = 'shell.sidebar-collapsed'
 
-const activeMode = shallowRef<ModeKey>('chat')
+const activeMode = shallowRef<ModeKey>('work')
 const activeView = computed(() => VIEWS[activeMode.value])
 const activeModeLabel = computed(() => MODES.find((m) => m.key === activeMode.value)?.label ?? '')
 const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === '1')
@@ -40,14 +37,14 @@ function toggleSidebar() {
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? '1' : '0')
 }
 
-// 快捷键：Alt+1/2/3 切模式，Ctrl+B 收起/展开侧栏
+// 快捷键：Alt+1/2 切模式，Ctrl+B 收起/展开侧栏
 function onKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b') {
     e.preventDefault()
     toggleSidebar()
     return
   }
-  if (e.altKey && ['1', '2', '3'].includes(e.key)) {
+  if (e.altKey && ['1', '2'].includes(e.key)) {
     e.preventDefault()
     activeMode.value = MODES[Number(e.key) - 1].key
   }
@@ -153,13 +150,7 @@ onBeforeUnmount(() => {
               stroke-linejoin="round"
               aria-hidden="true"
             >
-              <template v-if="mode.key === 'chat'">
-                <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-3.6 3v-3H6.5A2.5 2.5 0 0 1 4 13.5z" />
-                <circle cx="9.2" cy="10" r="0.9" fill="currentColor" stroke="none" />
-                <circle cx="12.5" cy="10" r="0.9" fill="currentColor" stroke="none" />
-                <circle cx="15.8" cy="10" r="0.9" fill="currentColor" stroke="none" />
-              </template>
-              <template v-else-if="mode.key === 'work'">
+              <template v-if="mode.key === 'work'">
                 <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
                 <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
                 <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
@@ -180,7 +171,7 @@ onBeforeUnmount(() => {
           </button>
         </nav>
 
-        <div class="sidebar-foot" title="Alt+1/2/3 切换模式">
+        <div class="sidebar-foot" title="Alt+1/2 切换模式">
           <span class="dot" />
           <span class="foot-text">v0.1.0 · 骨架阶段</span>
         </div>

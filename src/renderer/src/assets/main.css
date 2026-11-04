@@ -27,12 +27,7 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.3);
 }
 
-/* 三种模式各自的强调色，由 .app 上的模式类切换 */
-.app.mode-chat {
-  --accent: #8b7cff;
-  --accent-soft: rgba(139, 124, 255, 0.16);
-}
-
+/* 两种模式各自的强调色，由 .app 上的模式类切换 */
 .app.mode-work {
   --accent: #3ddc97;
   --accent-soft: rgba(61, 220, 151, 0.14);

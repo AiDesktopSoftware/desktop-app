@@ -22,19 +22,18 @@
   并在当前会话设置代理后再推送：`$env:HTTPS_PROXY='http://127.0.0.1:7897'`（混合端口 7897）
 - 代理未开启时不要反复重试推送，先确认代理端口 7897 是否在监听
 
-## 分支与协作（三人分工，用户明确要求）
+## 分支与协作（两人分工，用户明确要求）
 
 | 改动范围 | 提交分支 | 说明 |
 |---|---|---|
-| 公共外壳（`App.vue`、`assets/main.css`、`src/main/`、`src/preload/`、构建配置、规则文档、备份脚本） | `main` | 共有前端，改动需保证不影响三个模块 |
+| 公共外壳（`App.vue`、`assets/main.css`、`src/main/`、`src/preload/`、构建配置、规则文档、备份脚本） | `main` | 共有前端，改动需保证不影响两个模块 |
 | 赵的个人模块（`views/work/`） | `feat/zhao-work` | AI 只在此分支做赵的模块，做完推送；需要合入 main 时走 PR |
-| 龙的个人模块（`views/chat/`） | `feat/long-chat` | 由龙自己开发，AI 不得在该目录写任何内容 |
 | 胡的个人模块（`views/info/`） | `feat/hu-info` | 由胡自己开发，AI 不得在该目录写任何内容 |
 
 铁律：
 
 1. 除公共外壳外，赵的所有任务都只在 `feat/zhao-work` 分支进行，不得直接提到 `main`
-2. `views/chat/`、`views/info/` 对 AI 只读，禁止添加业务内容、mock 数据或样式
+2. `views/info/` 对 AI 只读，禁止添加业务内容、mock 数据或样式
 3. 公共外壳改动提交到 `main` 后，赵的分支需定期 `merge main` 同步，避免长期分叉
 4. 个人分支合入 `main` 走 Pull Request，不直接强推
 
