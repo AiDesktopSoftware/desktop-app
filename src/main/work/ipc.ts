@@ -35,7 +35,6 @@ import type {
   WorkKbImportResult,
   WorkKbListResult,
   WorkKbRemoveResult,
-  WorkModeGetResult,
   WorkModeListResult,
   WorkModeRemoveResult,
   WorkModeResult,
@@ -235,18 +234,6 @@ export function registerWorkIpc(): void {
       return { ok: false, modes: [], message: `读取模式失败：${errorDetail(error)}` }
     }
   })
-
-  ipcMain.handle(
-    'work:mode:get',
-    async (_event, payload: { id?: unknown }): Promise<WorkModeGetResult> => {
-      try {
-        const id = typeof payload?.id === 'string' ? payload.id : undefined
-        return { ok: true, mode: await getMode(id) }
-      } catch (error) {
-        return { ok: false, message: `读取模式失败：${errorDetail(error)}` }
-      }
-    }
-  )
 
   ipcMain.handle(
     'work:mode:save',
@@ -463,25 +450,6 @@ export function registerWorkIpc(): void {
       }
     }
   )
-
-  // 供界面单独检索本地库：复用统一检索入口，保证结构与 work:rag:search 一致
-  ipcMain.handle('work:kb:search', async (_event, payload: { query?: unknown; topK?: unknown }) => {
-    try {
-      const query = typeof payload?.query === 'string' ? payload.query : ''
-      const topK =
-        typeof payload?.topK === 'number' && Number.isFinite(payload.topK)
-          ? payload.topK
-          : 5
-      return await searchRag({ query, provider: 'local', topK })
-    } catch (error) {
-      return {
-        ok: false,
-        provider: 'local',
-        chunks: [],
-        message: `检索失败：${errorDetail(error)}`
-      }
-    }
-  })
 
   /**
    * 界面直接执行能力，与 Agent 工具调用共用 executeTool。

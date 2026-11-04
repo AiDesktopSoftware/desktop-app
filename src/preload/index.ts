@@ -68,6 +68,7 @@ const workApi: WorkApi = {
   onError: (cb) => subscribe('work:chat:error', cb),
   onTool: (cb) => subscribe('work:agent:tool', cb),
   onEvidence: (cb) => subscribe('work:agent:evidence', cb),
+  onTodo: (cb) => subscribe('work:agent:todo', cb),
   settingsStatus: () =>
     ipcRenderer.invoke('work:settings:status') as Promise<WorkSettingsStatus>,
   loadSessions: () => ipcRenderer.invoke('work:store:load') as Promise<WorkSession[]>,

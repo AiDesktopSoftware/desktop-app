@@ -18,6 +18,7 @@ import type {
   WorkSettingsStatus,
   WorkToolCall,
   WorkToolEvent,
+  WorkTodoItem,
   WorkflowDefinition,
   WorkflowRun
 } from './types'
@@ -46,6 +47,7 @@ interface PendingRequest {
   onDelta?: (delta: string) => void
   onTool?: (event: WorkToolEvent) => void
   onEvidence?: (items: WorkEvidenceItem[]) => void
+  onTodo?: (todos: WorkTodoItem[]) => void
   settled: boolean
   aborted: boolean
   resolve: (result: RunResult) => void
@@ -595,6 +597,7 @@ let offDone: (() => void) | undefined
 let offError: (() => void) | undefined
 let offTool: (() => void) | undefined
 let offEvidence: (() => void) | undefined
+let offTodo: (() => void) | undefined
 let offFlowStep: (() => void) | undefined
 let offFlowDone: (() => void) | undefined
 let offToolApprove: (() => void) | undefined
@@ -677,6 +680,16 @@ const currentEvidence = computed<WorkEvidenceItem[]>(() => {
   return []
 })
 
+/** Agent todo 进度：当前会话最后一条带 <todo> 解析的助手消息 */
+const currentTodos = computed<WorkTodoItem[]>(() => {
+  const messages = activeMessages.value
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const todos = messages[i].todos
+    if (todos && todos.length > 0) return todos
+  }
+  return []
+})
+
 /** 检索面板的默认来源：模式优先，其次全局偏好 */
 const searchDefaultProvider = computed<RagProviderId>(
   () => currentMode.value?.ragProvider ?? prefs.value.defaultProvider
@@ -705,7 +718,7 @@ const activePanelProps = computed<Record<string, unknown>>(() => {
     case 'sources':
       return { items: currentEvidence.value }
     case 'trace':
-      return { tools: currentTools.value, labels: capabilityLabels.value }
+      return { tools: currentTools.value, todos: currentTodos.value, labels: capabilityLabels.value }
     case 'knowledge':
       return {
         documents: kbDocuments.value,
@@ -978,6 +991,7 @@ function startRequest(
     onDelta?: (delta: string) => void
     onTool?: (event: WorkToolEvent) => void
     onEvidence?: (items: WorkEvidenceItem[]) => void
+    onTodo?: (todos: WorkTodoItem[]) => void
   } = {}
 ): Promise<RunResult> {
   const requestId = uid()
@@ -988,6 +1002,7 @@ function startRequest(
       onDelta: callbacks.onDelta,
       onTool: callbacks.onTool,
       onEvidence: callbacks.onEvidence,
+      onTodo: callbacks.onTodo,
       settled: false,
       aborted: false,
       resolve
@@ -1147,6 +1162,12 @@ async function runAgent(
       onEvidence: (items) => {
         if (stopRequested.value) return
         applyEvidence(assistant, items)
+        session.updatedAt = Date.now()
+        schedulePersist()
+      },
+      onTodo: (todos) => {
+        if (stopRequested.value) return
+        assistant.todos = todos
         session.updatedAt = Date.now()
         schedulePersist()
       }
@@ -2507,6 +2528,13 @@ onMounted(async () => {
     if (!entry) return
     entry.onEvidence?.(event.items)
   })
+  offTodo = api.onTodo(({ requestId, todos }) => {
+    const entry = handlers.get(requestId)
+    if (!entry) return
+    // agent.ts 推的 todos 是 ParsedTodo[]（每组带 items），展平成扁平数组
+    const flatTodos: WorkTodoItem[] = todos.flatMap((g) => g.items ?? [])
+    entry.onTodo?.(flatTodos)
+  })
   offFlowStep = api.onFlowStep((event) => {
     if (event.runId !== flowRunId.value) return
     const step = flowSteps.value.find((item) => item.id === event.stepId)
@@ -2590,6 +2618,7 @@ onBeforeUnmount(() => {
   offError?.()
   offTool?.()
   offEvidence?.()
+  offTodo?.()
   offFlowStep?.()
   offFlowDone?.()
   offToolApprove?.()

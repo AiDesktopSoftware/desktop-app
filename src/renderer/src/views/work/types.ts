@@ -80,6 +80,11 @@ export interface WorkEvidenceItem {
   path?: string
 }
 
+export interface WorkTodoItem {
+  text: string
+  done?: boolean
+}
+
 export interface WorkMessage {
   id: string
   role: WorkRole
@@ -89,6 +94,8 @@ export interface WorkMessage {
   tools?: WorkToolCall[]
   /** 该轮回答自动汇总的检索来源，按 url 或 path 去重 */
   evidence?: WorkEvidenceItem[]
+  /** Agent 从 <todo> 标签解析的进度追踪 */
+  todos?: WorkTodoItem[]
   /** 仅运行时使用，持久化时剔除 */
   streaming?: boolean
   error?: string
